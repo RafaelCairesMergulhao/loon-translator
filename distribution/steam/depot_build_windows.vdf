@@ -1,0 +1,15 @@
+"DepotBuildConfig"
+{
+    "DepotID" "YOUR_DEPOT_ID"
+    "ContentRoot" "..\..\dist"
+
+    "FileMapping"
+    {
+        "LocalPath" "LoonTranslator\*"
+        "DepotPath" "."
+        "recursive" "1"
+    }
+
+    "FileExclusion" "*.pdb"
+    "FileExclusion" "__pycache__\*"
+}

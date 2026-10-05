@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loon-translator"
+version = "0.5.0"
+description = "Tradutor de voz bidirecional para chamadas no Windows"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.26,<3",
+    "sounddevice>=0.5,<1",
+    "soundfile>=0.12,<1",
+    "faster-whisper>=1.1,<2",
+    "edge-tts>=7,<8",
+    "deep-translator>=1.11,<2",
+    "python-dotenv>=1.0,<2",
+    "customtkinter>=5.2,<6",
+    "argostranslate>=1.9,<2",
+    "httpx>=0.27,<1",
+    "PyAudioWPatch>=0.2.12.7,<0.3; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=5,<7",
+    "pyinstaller>=6.10,<7",
+]
+
+[project.scripts]
+loon-translator = "main:main"
+loon-devices = "tools.diagnose_audio:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "domain*", "infrastructure*", "services*", "ui*", "tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

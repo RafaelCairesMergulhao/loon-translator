@@ -1,0 +1,187 @@
+Metadata-Version: 2.4
+Name: loon-translator
+Version: 0.3.0
+Summary: Tradutor de voz bidirecional para chamadas no Windows
+Requires-Python: <3.13,>=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: numpy<3,>=1.26
+Requires-Dist: sounddevice<1,>=0.5
+Requires-Dist: soundfile<1,>=0.12
+Requires-Dist: faster-whisper<2,>=1.1
+Requires-Dist: edge-tts<8,>=7
+Requires-Dist: deep-translator<2,>=1.11
+Requires-Dist: python-dotenv<2,>=1.0
+Requires-Dist: customtkinter<6,>=5.2
+Requires-Dist: argostranslate<2,>=1.9
+Requires-Dist: PyAudioWPatch<0.3,>=0.2.12.7; platform_system == "Windows"
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: pytest-cov<7,>=5; extra == "dev"
+Requires-Dist: pyinstaller<7,>=6.10; extra == "dev"
+
+# Loon Translator
+
+Tradutor de voz bidirecional para chamadas no Windows. O Loon captura seu
+microfone, traduz sua fala e envia a voz sintetizada para um microfone virtual.
+Ao mesmo tempo, captura o áudio recebido pelo WASAPI loopback, traduz e reproduz
+o resultado no seu fone.
+
+## Limites importantes
+
+- A tradução ocorre por frases curtas. STT, tradução e TTS introduzem alguns
+  segundos de latência; não existe tradução de voz perfeitamente instantânea.
+- O Loon não instala um driver próprio. Ele usa o
+  [VB-CABLE](https://vb-audio.com/Cable/), um driver assinado e mantido pela
+  VB-Audio.
+- A captura recebida usa o áudio inteiro do dispositivo escolhido. Para evitar
+  eco, o Loon pausa essa captura enquanto reproduz a tradução recebida.
+- Use fones de ouvido. Alto-falantes podem voltar ao microfone físico e causar
+  eco acústico.
+
+## Requisitos
+
+- Windows 10 ou 11, 64 bits
+- Python 3.11 ou 3.12 (Python 3.14 ainda não é suportado pela stack completa)
+- VB-CABLE instalado e computador reiniciado
+- Internet para tradução em nuvem e Edge TTS
+- Aproximadamente 1 GB livre para ambiente, modelo e cache
+
+## Instalação
+
+No PowerShell, dentro desta pasta:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .
+copy .env.example .env
+python -m tools.diagnose_audio
+python main.py
+```
+
+Se você já possui o `uv`, ele instala a versão correta do Python e todas as
+dependências automaticamente:
+
+```powershell
+uv sync --extra dev
+uv run python main.py
+```
+
+Na primeira transcrição, o Faster-Whisper baixa o modelo `base`. Esse download
+ocorre uma vez e pode levar alguns minutos.
+
+Se o PowerShell bloquear a ativação do ambiente:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+## Configuração do VB-CABLE e da chamada
+
+1. Baixe o VB-CABLE no site oficial, execute o instalador de 64 bits como
+   administrador e reinicie o Windows.
+2. No Loon, escolha seu microfone físico em **Minha voz**.
+3. Escolha **CABLE Input (VB-Audio Virtual Cable)** como saída virtual.
+4. No Discord, WhatsApp Desktop, jogo, Teams ou outro aplicativo, escolha
+   **CABLE Output (VB-Audio Virtual Cable)** como microfone.
+5. Mantenha a saída do aplicativo de chamada no seu fone.
+6. No Loon, escolha o loopback que corresponde a esse mesmo fone e escolha o
+   fone como saída da tradução recebida.
+7. Execute **Testar fone** e depois **Iniciar tradução**.
+
+Não marque “Escutar este dispositivo” no CABLE Output. Essa opção pode criar
+realimentação. O áudio original do seu microfone não é enviado à chamada:
+somente a voz traduzida chega ao CABLE Input.
+
+## Modos de processamento
+
+### Híbrido
+
+Tenta os pacotes Argos e as vozes instaladas no Windows. Se não estiverem
+disponíveis, usa tradução em nuvem e Edge TTS. O reconhecimento de fala
+permanece local com Faster-Whisper.
+
+### Nuvem
+
+Usa DeepL quando `DEEPL_API_KEY` estiver definido; caso contrário, usa o backend
+Google do `deep-translator`. A voz é gerada pelo Edge TTS.
+
+### Local
+
+É o padrão para novas instalações e não possui custo por conversa. Abra
+**Pacotes de idiomas** e baixe uma vez os pares desejados. A tradução usa
+inglês como interligação entre os idiomas instalados. A voz usa primeiro o
+pacote de voz instalado no Windows; opcionalmente, é possível configurar um
+modelo Piper comercialmente aprovado com `PIPER_MODEL`.
+
+Os 12 idiomas de lançamento são português, inglês, espanhol, francês, alemão,
+italiano, hindi, mandarim, japonês, coreano, russo e árabe. O mecanismo não
+envia conteúdo à nuvem silenciosamente no modo Local.
+
+## Privacidade
+
+- O Faster-Whisper processa o áudio localmente.
+- Nos modos Híbrido/Nuvem, o texto pode ser enviado ao provedor de tradução e o
+  texto traduzido ao Edge TTS.
+- O histórico não é salvo por padrão. Quando habilitado, fica em
+  `%APPDATA%\LoonTranslator\loon_translator.db`.
+- Preferências ficam em `%APPDATA%\LoonTranslator\settings.json`.
+- Áudios sintetizados ficam em um cache local limitado aos 100 arquivos mais
+  recentes em `%APPDATA%\LoonTranslator\cache`.
+- Logs técnicos ficam em `%APPDATA%\LoonTranslator\loon.log` e não incluem
+  transcrições por padrão.
+- O cliente Firebase antigo não participa do fluxo e nenhuma conversa é
+  enviada ao Firebase.
+- A interface pede autorização antes do primeiro uso de serviços em nuvem.
+  Use **Apagar histórico e cache** para remover conversas salvas e vozes
+  sintetizadas.
+
+## Diagnóstico
+
+```powershell
+python -m tools.diagnose_audio
+```
+
+O comando deve indicar `VB-CABLE: OK` e `WASAPI loopback: OK`.
+
+Se não houver loopback, confirme que o pacote `PyAudioWPatch` foi instalado,
+que existe um dispositivo de reprodução ativo e que o Windows usa WASAPI. Se o
+VB-CABLE não aparecer, reinstale-o como administrador e reinicie o computador.
+
+Se a voz estiver cortada, aproxime o microfone e reduza ruído ambiente. Os
+parâmetros avançados `phrase_silence_ms` e `max_phrase_seconds` são gravados em
+`settings.json`.
+
+## Testes
+
+```powershell
+pip install -e ".[dev]"
+pytest
+```
+
+Checklist manual:
+
+1. Testar o fone pela interface.
+2. Confirmar no gravador do Windows que CABLE Output recebe a voz traduzida.
+3. Fazer uma chamada de teste e verificar os dois sentidos.
+4. Confirmar que a tradução recebida não é retranscrita em ciclo.
+5. Desconectar/reconectar um dispositivo e usar **Atualizar dispositivos**.
+6. Testar a parada durante fala, durante tradução e durante reprodução.
+7. Desligar a rede para confirmar o erro explícito no modo Nuvem e o
+   funcionamento do STT local.
+
+## Empacotamento
+
+Primeiro valide o hardware com `python main.py`. Para gerar a pasta comercial
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+```
+
+O resultado fica em `dist\LoonTranslator`. Leia
+`docs\COMMERCIAL_RELEASE.md` antes de enviar à Steam. O aplicativo não embute
+nem instala silenciosamente o VB-CABLE; o driver deve vir do fornecedor
+oficial.

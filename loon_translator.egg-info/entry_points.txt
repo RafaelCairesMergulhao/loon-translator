@@ -1,0 +1,3 @@
+[console_scripts]
+loon-devices = tools.diagnose_audio:main
+loon-translator = main:main

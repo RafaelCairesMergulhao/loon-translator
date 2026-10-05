@@ -1,0 +1,7 @@
+core
+domain
+infrastructure
+main
+services
+tools
+ui

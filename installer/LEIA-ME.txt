@@ -1,0 +1,41 @@
+﻿LOON TRANSLATOR 0.5.0 - tradutor de voz para chamadas
+
+O que ele faz
+  Você fala em português e a outra pessoa ouve em inglês (ou em outro dos
+  12 idiomas). O que ela responde chega traduzido no seu fone.
+  Funciona no Discord, WhatsApp Desktop, Teams, Zoom e em jogos.
+
+Antes de usar em chamadas (uma vez só)
+  1. Instale o VB-CABLE (gratuito): https://vb-audio.com/Cable/
+     Execute "VBCABLE_Setup_x64.exe" como administrador e REINICIE o PC.
+     O instalador do Loon abre esse site se o VB-CABLE não for encontrado.
+  2. No Discord/WhatsApp/jogo, escolha "CABLE Output" como microfone.
+  3. Use fones de ouvido (alto-falantes causam eco).
+
+Primeira abertura
+  - O Loon baixa o modelo de reconhecimento de voz (~150 MB, uma vez).
+  - No modo Local, abra "Pacotes de idiomas" e baixe os idiomas que vai usar.
+  - Ao clicar em Iniciar, ele mostra "Preparando" por alguns segundos.
+  - Qualidade da voz: "Natural online" (Microsoft, a mais humana), "Natural local
+    (Piper)" (neural no seu PC, ~60 MB na primeira vez) ou "Windows" (offline clássico).
+
+Modos de tradução
+  Local    - tudo no seu PC, sem internet. A voz começa ~1 s depois da fala.
+  Híbrido  - local quando possível, nuvem quando faltar um idioma.
+  Nuvem    - Google/DeepL e vozes neurais do Edge.
+  IA       - entende gíria e contexto da conversa. Na primeira vez, o Loon
+             pede uma chave GRATUITA do Groq:
+               1. Entre em https://console.groq.com/keys (login com Google)
+               2. "Create API Key", copie e cole no Loon.
+
+Onde ficam seus dados
+  %APPDATA%\LoonTranslator  (configurações, cache de voz, chave da IA)
+  O histórico de conversas só é salvo se você ativar.
+
+Problemas comuns
+  - A outra pessoa não me ouve: confira se o microfone da chamada é
+    "CABLE Output" e se no Loon a saída virtual é "CABLE Input".
+  - Não ouço a tradução recebida: escolha no Loon o loopback do mesmo fone
+    em que a chamada toca.
+  - O Windows SmartScreen avisou "aplicativo desconhecido": clique em
+    "Mais informações" > "Executar assim mesmo" (o app não é assinado).

@@ -1,0 +1,17 @@
+numpy<3,>=1.26
+sounddevice<1,>=0.5
+soundfile<1,>=0.12
+faster-whisper<2,>=1.1
+edge-tts<8,>=7
+deep-translator<2,>=1.11
+python-dotenv<2,>=1.0
+customtkinter<6,>=5.2
+argostranslate<2,>=1.9
+
+[:platform_system == "Windows"]
+PyAudioWPatch<0.3,>=0.2.12.7
+
+[dev]
+pytest<9,>=8
+pytest-cov<7,>=5
+pyinstaller<7,>=6.10
