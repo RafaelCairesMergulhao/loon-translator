@@ -2,7 +2,7 @@
 ; Gerado por scripts\build_installer.ps1, que passa /DSourceDir com a pasta do PyInstaller.
 
 #define AppName "Loon Translator"
-#define AppVersion "0.5.0"
+#define AppVersion "1.0.6"
 #define AppExe "LoonTranslator.exe"
 #define VBCableKey "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:VBCABLE {87459874-1236-4469}"
 #ifndef SourceDir

@@ -27,6 +27,21 @@ def test_english_idiom_skips_literal_translation(monkeypatch: pytest.MonkeyPatch
     assert result.provider == "equivalência cultural"
 
 
+def test_came_out_late_is_not_someone_leaving(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args):
+        raise AssertionError("a frase inteira já tem equivalente")
+
+    monkeypatch.setattr(TranslationEngine, "_translate_argos", staticmethod(fail))
+    result = TranslationEngine().translate(
+        "Saiu, mas demorou muito para sair.",
+        "pt",
+        "Inglês",
+        "Local",
+        context="casual",
+    )
+    assert result.text == "It came out, but it took a long time to come out."
+
+
 def test_context_changes_register(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         TranslationEngine,
@@ -106,6 +121,34 @@ def test_english_slang_contractions_are_expanded(monkeypatch: pytest.MonkeyPatch
     TranslationEngine().translate("I'm gonna go", "en", "Português", "Local", context="formal")
     assert "going to" in seen[0]
     assert "gonna" not in seen[0].lower()
+
+
+def test_slang_in_other_languages_is_replaced_before_the_translator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args):
+        raise AssertionError("a gíria inteira não deveria ir ao tradutor literal")
+
+    monkeypatch.setattr(TranslationEngine, "_translate_argos", staticmethod(fail))
+    spanish = TranslationEngine().translate("qué onda", "es", "Português", "Local")
+    japanese = TranslationEngine().translate("それな", "ja", "Português", "Local")
+    assert spanish.text == "E aí"
+    assert japanese.text == "É isso"
+    assert spanish.provider == "equivalência cultural"
+
+
+def test_ambiguous_slang_stays_in_the_sentence_for_the_translator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def fake(text, _source, _target):
+        seen.append(text)
+        return "ok"
+
+    monkeypatch.setattr(TranslationEngine, "_translate_argos", staticmethod(fake))
+    TranslationEngine().translate("tá brabo", "pt", "Inglês", "Local")
+    assert seen == ["está brabo"]
 
 
 def test_unknown_sentence_still_reports_missing_local_model(

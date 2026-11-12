@@ -4,15 +4,17 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+from ui.win_chrome import bind_opaque
 
-SECTIONS = ("translate", "tests", "train", "settings")
+
+SECTIONS = ("start", "translate", "history", "tests", "train", "settings")
 
 
 class TipsCard(ctk.CTkFrame):
     def __init__(self, master, app, section: str) -> None:
         super().__init__(
             master,
-            fg_color="#F8FAFC",
+            fg_color="#111c26",
             corner_radius=12,
             border_width=1,
             border_color=app.BORDER,
@@ -36,6 +38,7 @@ class TipsCard(ctk.CTkFrame):
 
 def open_tutorial(app) -> None:
     window = ctk.CTkToplevel(app.root)
+    bind_opaque(window)
     window.title(app.t("tutorial_title"))
     window.geometry("720x640")
     window.transient(app.root)

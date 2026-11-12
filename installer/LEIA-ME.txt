@@ -1,9 +1,13 @@
-﻿LOON TRANSLATOR 0.5.0 - tradutor de voz para chamadas
+LOON TRANSLATOR 1.0.6 - tradutor de voz para chamadas
 
 O que ele faz
   Você fala em português e a outra pessoa ouve em inglês (ou em outro dos
   12 idiomas). O que ela responde chega traduzido no seu fone.
   Funciona no Discord, WhatsApp Desktop, Teams, Zoom e em jogos.
+  A legenda pode aparecer enquanto você fala. A voz traduzida só sai
+  quando a frase fecha no silêncio, para não cortar a palavra no meio.
+  Gírias e palavrões do idioma ouvido entram como dica curta no reconhecimento
+  e saem com um equivalente natural, sem tradução ao pé da letra.
 
 Antes de usar em chamadas (uma vez só)
   1. Instale o VB-CABLE (gratuito): https://vb-audio.com/Cable/
@@ -16,8 +20,10 @@ Primeira abertura
   - O Loon baixa o modelo de reconhecimento de voz (~150 MB, uma vez).
   - No modo Local, abra "Pacotes de idiomas" e baixe os idiomas que vai usar.
   - Ao clicar em Iniciar, ele mostra "Preparando" por alguns segundos.
-  - Qualidade da voz: "Natural online" (Microsoft, a mais humana), "Natural local
-    (Piper)" (neural no seu PC, ~60 MB na primeira vez) ou "Windows" (offline clássico).
+  - Qualidade da voz: "Natural local (Piper)" é o padrão (neural no seu PC, a
+    mais rápida; baixa ~60 MB por idioma na primeira vez e, enquanto isso, usa
+    outra voz). "Natural online" (Microsoft, a mais humana) leva ~1 s a mais
+    por frase; "Windows" é a voz clássica, offline.
 
 Modos de tradução
   Local    - tudo no seu PC, sem internet. A voz começa ~1 s depois da fala.

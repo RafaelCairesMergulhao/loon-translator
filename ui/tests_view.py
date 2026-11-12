@@ -8,9 +8,11 @@ import customtkinter as ctk
 import numpy as np
 import sounddevice as sd
 
+from domain.entities import VoiceSnapshot
 from services.audio_devices import AudioDevice, AudioDeviceManager
 from services.translation_engine import VOICE_MAP
 from services.tts_engine import AudioPlayer, TTSEngine
+from services.win_com import com_apartment
 from ui.tips import TipsCard
 from ui.waveform import WaveformMeter
 
@@ -76,7 +78,7 @@ class TestsView(ctk.CTkFrame):
             height=12,
             corner_radius=6,
             progress_color=app.BLUE,
-            fg_color="#E8EEF8",
+            fg_color="#1c2b38",
         )
         self.level.pack(fill=tk.X, padx=18, pady=(0, 8))
         self.level.set(0)
@@ -141,8 +143,8 @@ class TestsView(ctk.CTkFrame):
             command=command,
             height=36,
             corner_radius=9,
-            fg_color="#EEF2F7",
-            hover_color="#E2E8F0",
+            fg_color=app.GHOST,
+            hover_color="#1c3845",
             text_color=app.TEXT,
             font=ctk.CTkFont("Segoe UI", 12, "bold"),
         )
@@ -236,15 +238,16 @@ class TestsView(ctk.CTkFrame):
                 rms = float(np.sqrt(np.mean(np.square(indata)) + 1e-12))
                 self.app._post_event(-1, "mic_level", max(0.0, min(1.0, rms / 0.08)))
 
-            with sd.InputStream(
-                device=index,
-                channels=1,
-                samplerate=16_000,
-                dtype="float32",
-                callback=callback,
-            ):
-                while not self._stop_monitor.wait(0.1):
-                    pass
+            with com_apartment():
+                with sd.InputStream(
+                    device=index,
+                    channels=1,
+                    samplerate=16_000,
+                    dtype="float32",
+                    callback=callback,
+                ):
+                    while not self._stop_monitor.wait(0.1):
+                        pass
         except Exception as exc:
             self.app._post_event(-1, "error", str(exc))
         finally:
@@ -289,6 +292,11 @@ class TestsView(ctk.CTkFrame):
 
     @staticmethod
     def _capture(device_uid: str, seconds: float, on_level=None) -> tuple[np.ndarray, int]:
+        with com_apartment():
+            return TestsView._capture_stream(device_uid, seconds, on_level)
+
+    @staticmethod
+    def _capture_stream(device_uid: str, seconds: float, on_level=None) -> tuple[np.ndarray, int]:
         index = AudioDeviceManager.index_from_uid(device_uid, "sd")
         native = int(sd.query_devices(index)["default_samplerate"])
         rates = []
@@ -356,33 +364,35 @@ class TestsView(ctk.CTkFrame):
         device = self._require_output()
         if device is None:
             return
+        snapshot = self.app.voice_snapshot()
+        sample_text = self.app.t("voice_sample_text")
         self._set_busy(True)
         self._post_status("test_generating")
         threading.Thread(
             target=self._voice_worker,
-            args=(device.uid,),
+            args=(device.uid, snapshot, sample_text),
             daemon=True,
         ).start()
 
-    def _voice_worker(self, device_uid: str) -> None:
+    def _voice_worker(self, device_uid: str, snapshot: VoiceSnapshot, sample_text: str) -> None:
         try:
             language = self.app.settings.native_language
             if language not in VOICE_MAP:
                 language = "Inglês"
             audio_file = TTSEngine().synthesize(
-                self.app.t("voice_sample_text"),
+                sample_text,
                 language,
-                self.app._gender_key(),
-                self.app._mode_key(),
-                self.app._rate_value(),
-                pitch_semitones=self.app._pitch_value(),
-                voice_engine=self.app._voice_engine_key(),
+                snapshot.gender,
+                snapshot.mode,
+                snapshot.rate,
+                pitch_semitones=snapshot.pitch,
+                voice_engine=snapshot.engine,
             )
             self._post_status("test_playing")
             AudioPlayer.play(
                 audio_file,
                 device_uid,
-                pitch_semitones=0.0 if self.app._voice_engine_key() != "windows" else self.app._pitch_value(),
+                pitch_semitones=0.0 if snapshot.engine != "windows" else snapshot.pitch,
             )
             self._post_status("test_done")
         except Exception as exc:

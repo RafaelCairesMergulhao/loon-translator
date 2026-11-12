@@ -9,11 +9,11 @@ import customtkinter as ctk
 class WaveformMeter(ctk.CTkFrame):
     """Barras que acompanham a voz enquanto a pessoa fala."""
 
-    def __init__(self, master, color: str = "#2563EB", bars: int = 42) -> None:
+    def __init__(self, master, color: str = "#39d7e4", bars: int = 42) -> None:
         super().__init__(master, fg_color="transparent", height=72)
         self._color = color
         self._levels: deque[float] = deque([0.0] * bars, maxlen=bars)
-        self.canvas = tk.Canvas(self, height=72, highlightthickness=0, bg="#F8FAFC")
+        self.canvas = tk.Canvas(self, height=72, highlightthickness=0, bg="#0b121b")
         self.canvas.pack(fill=tk.X, expand=True)
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
 

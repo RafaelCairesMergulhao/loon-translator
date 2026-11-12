@@ -3,9 +3,14 @@
 Uso:
     python -m tools.benchmark_latency
     python -m tools.benchmark_latency --models base small --rounds 3 --legacy
+    python -m tools.benchmark_latency --streaming --voice windows
 
 A frase de teste é gerada pela voz do Windows e transcrita pelo Whisper, então
 o resultado vale para esta máquina. Nada é tocado nos alto-falantes.
+
+``--streaming`` toca a frase em tempo real, em blocos de 32 ms, pelo VAD e pelo
+pipeline inteiro, e mede do fim de cada fala até a voz traduzida ficar pronta,
+com e sem a transcrição adiantada na pausa.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import argparse
 import statistics
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -69,12 +75,106 @@ def _legacy_sapi(text: str, output: Path) -> None:
     )
 
 
+class _SilentPlayer:
+    def play(self, *_args, **_kwargs) -> None:
+        pass
+
+
+def _stream_once(audio: np.ndarray, args: argparse.Namespace, speculative: bool, cache: Path) -> list:
+    from core.pipeline import DuplexTranslationPipeline, PipelineOptions
+    from domain.entities import AudioDirection
+    from services.audio_devices import AudioDevice
+    from services.audio_manager import SpeechSegmenter
+    from services.vad import FRAME_SAMPLES, SileroVAD
+
+    device = AudioDevice(uid="sd:0", name="benchmark", kind="benchmark", channels=1, sample_rate=16_000)
+    options = PipelineOptions(
+        microphone=device,
+        virtual_output=device,
+        monitor_output=device,
+        loopback=device,
+        outgoing_source="Português",
+        outgoing_target="Inglês",
+        incoming_source="Inglês",
+        incoming_target="Português",
+        voice_gender="Feminina",
+        translation_mode=args.mode,
+        whisper_model=args.models[0],
+        voice_engine=args.voice,
+        live_captions="off",
+        speculative=speculative,
+    )
+    records: list = []
+    arrived = threading.Condition()
+
+    def on_record(record) -> None:
+        with arrived:
+            records.append(record)
+            arrived.notify_all()
+
+    pipeline = DuplexTranslationPipeline(
+        options,
+        on_record=on_record,
+        on_status=lambda *_args: None,
+        on_error=lambda message: print(f"    erro: {message}"),
+    )
+    pipeline._player = _SilentPlayer()
+    pipeline._tts = TTSEngine(cache_dir=cache)
+    pipeline.start(listen=False)
+    try:
+        pipeline._warm.wait(timeout=180)
+        segmenter = SpeechSegmenter(
+            SileroVAD(), silence_ms=options.silence_ms, max_seconds=options.max_phrase_seconds
+        )
+        stream = np.concatenate([np.zeros(4_800, np.float32), audio, np.zeros(32_000, np.float32)])
+        phrases = 0
+        started = time.perf_counter()
+        for offset in range(0, stream.size, FRAME_SAMPLES):
+            for segment in segmenter.feed(stream[offset : offset + FRAME_SAMPLES]):
+                phrases += segment.kind == "final"
+                pipeline.submit(AudioDirection.OUTGOING, segment)
+            delay = started + (offset + FRAME_SAMPLES) / 16_000 - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+        with arrived:
+            arrived.wait_for(lambda: len(records) >= phrases, timeout=30)
+        return list(records)
+    finally:
+        pipeline.stop()
+
+
+def _streaming(audio: np.ndarray, args: argparse.Namespace, directory: Path) -> None:
+    print(f"Fluxo contínuo: Silero VAD + pipeline completo (Whisper {args.models[0]}, modo {args.mode}, voz {args.voice})")
+    print("  latência = fim da fala → primeiro áudio traduzido pronto para tocar\n")
+    for speculative in (False, True):
+        label = "com transcrição na pausa" if speculative else "sem adiantar (espera a pausa)"
+        latencies: list[float] = []
+        stages: list[tuple[int, int, int]] = []
+        for index in range(args.rounds):
+            cache = directory / f"tts-{int(speculative)}-{index}"
+            for record in _stream_once(audio, args, speculative, cache):
+                latencies.append(record.latency_ms)
+                stages.append((record.stt_ms, record.translation_ms, record.speech_ms))
+                if index == 0:
+                    print(f"    {record.latency_ms:5d} ms  \"{record.source_text}\" → \"{record.translated_text}\"")
+        if not latencies:
+            print(f"  {label}: nenhuma frase traduzida")
+            continue
+        stt, translation, speech = (statistics.median(values) for values in zip(*stages))
+        print(
+            f"  {label:<30} mediana {_median(latencies)}  pior {max(latencies):5.0f} ms"
+            f"  (Whisper {stt:.0f}, tradução {translation:.0f}, voz {speech:.0f} ms)\n"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", nargs="*", default=["auto"], help="auto, fast, balanced, accurate ou nome do modelo")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--mode", default="Local", choices=["Local", "Híbrido", "Nuvem", "IA"])
     parser.add_argument("--legacy", action="store_true", help="inclui distil-large-v3 e SAPI com PowerShell novo por frase")
+    parser.add_argument("--streaming", action="store_true", help="mede o pipeline inteiro em tempo real, com VAD")
+    parser.add_argument("--voice", default="windows", choices=["windows", "natural", "piper"])
     args = parser.parse_args()
     load_dotenv()
 
@@ -83,6 +183,10 @@ def main() -> None:
         print("Gerando a frase de teste com a voz do Windows...")
         audio = _sample(directory)
         print(f"Frase: {PHRASE!r} ({audio.size / 16_000:.1f}s de áudio)\n")
+        if args.streaming:
+            _streaming(audio, args, directory)
+            SapiWorker.shared().close()
+            return
 
         models = list(args.models) + (["distil-large-v3"] if args.legacy else [])
         print("Reconhecimento de fala (Faster-Whisper, após aquecimento)")

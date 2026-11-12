@@ -11,18 +11,22 @@ import time
 from pathlib import Path
 
 import edge_tts
+import httpx
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
 from core.config import APP_DIR
+from domain.metrics import ProviderHealth
 from domain.sorting import nlargest
 from services.audio_devices import AudioDeviceManager
 from services.piper_engine import PiperEngine, PiperError
 from services.pitch_shift import shift_pitch
 from services.sapi_worker import SapiWorker
 from services.speech_prosody import edge_pitch, spoken_text
+from services.translation_engine import LANGUAGES_DICT
 from services.translation_engine import VOICE_MAP
+from services.win_com import com_apartment
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +138,14 @@ class TTSEngine:
                 missing.append(name)
         return missing
 
+    EDGE_ATTEMPTS = 1
+    EDGE_TIMEOUT_S = 3.0
+
     def __init__(self, cache_dir: Path | None = None) -> None:
         self.cache_dir = cache_dir or APP_DIR / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Cada tentativa no Edge fora do ar custa ~1,3 s; sem o disjuntor, toda frase pagaria isso.
+        self.health = ProviderHealth(cooldown_s=120.0)
         self.prune_cache()
 
     def synthesize(
@@ -147,14 +156,14 @@ class TTSEngine:
         mode: str,
         speed: float = 1.0,
         pitch_semitones: float = 0.0,
-        voice_engine: str = "natural",
+        voice_engine: str = "piper",
     ) -> Path:
         text = spoken_text(text)
         if len(text) > 500:
             text = text[:500].rsplit(" ", 1)[0]
         speed = round(max(0.5, min(2.0, float(speed))), 2)
         pitch = round(max(-6.0, min(6.0, float(pitch_semitones))), 1)
-        engine = voice_engine if voice_engine in {"natural", "piper", "windows"} else "natural"
+        engine = voice_engine if voice_engine in {"natural", "piper", "windows", "grok", "elevenlabs", "xtts"} else "piper"
         voice = VOICE_MAP.get(language_name, VOICE_MAP["Inglês"]).get(
             gender, VOICE_MAP["Inglês"]["Feminina"]
         )
@@ -164,16 +173,64 @@ class TTSEngine:
         edge_file = self.cache_dir / f"{key}.neural.mp3"
         piper_file = self.cache_dir / f"{key}.piper.wav"
         sapi_file = self.cache_dir / f"{key}.sapi.wav"
+        grok_file = self.cache_dir / f"{key}.grok.mp3"
+        eleven_file = self.cache_dir / f"{key}.eleven.mp3"
+        xtts_file = self.cache_dir / f"{key}.xtts.wav"
+
+        if engine == "elevenlabs":
+            from services.providers.speech import SpeechError, elevenlabs_speak
+
+            try:
+                return elevenlabs_speak(text, language_name, gender, eleven_file, speed)
+            except (SpeechError, Exception) as exc:
+                logger.info("ElevenLabs indisponível; tentando Piper local: %s", exc)
+            try:
+                return self._piper(text, language_name, gender, piper_file, speed, pitch)
+            except Exception as piper_error:
+                logger.info("Piper indisponível: %s", piper_error)
+            return self._windows_or_fail(text, language_name, gender, sapi_file, speed, mode)
+
+        if engine == "xtts":
+            from services.providers.speech import SpeechError, xtts_speak
+
+            try:
+                return xtts_speak(text, language_name, xtts_file, speed)
+            except (SpeechError, Exception) as exc:
+                logger.info("XTTS indisponível; tentando Piper local: %s", exc)
+            try:
+                return self._piper(text, language_name, gender, piper_file, speed, pitch)
+            except Exception as piper_error:
+                logger.info("Piper indisponível: %s", piper_error)
+            return self._windows_or_fail(text, language_name, gender, sapi_file, speed, mode)
+
+        if engine == "grok":
+            try:
+                return self._grok(text, language_name, gender, grok_file, speed)
+            except Exception as grok_error:
+                logger.info("Voz Grok indisponível: %s", grok_error)
+            try:
+                return self._piper(text, language_name, gender, piper_file, speed, pitch)
+            except Exception as piper_error:
+                logger.info("Piper indisponível: %s", piper_error)
+            if mode == "Local":
+                return self._windows_or_fail(text, language_name, gender, sapi_file, speed, mode)
+            try:
+                return self._edge(text, voice, edge_file, speed, pitch)
+            except Exception as edge_error:
+                logger.info("Voz neural indisponível: %s", edge_error)
+            return self._windows_or_fail(text, language_name, gender, sapi_file, speed, mode)
 
         if engine == "piper":
             try:
                 return self._piper(text, language_name, gender, piper_file, speed, pitch)
             except Exception as piper_error:
-                logger.info("Piper indisponível; tentando voz neural online: %s", piper_error)
-            try:
-                return self._edge(text, voice, edge_file, speed, pitch)
-            except Exception as edge_error:
-                logger.info("Voz neural indisponível: %s", edge_error)
+                logger.info("Piper indisponível: %s", piper_error)
+            # O modo Local com Piper não pede consentimento de nuvem: o texto não pode ir ao Edge.
+            if mode != "Local":
+                try:
+                    return self._edge(text, voice, edge_file, speed, pitch)
+                except Exception as edge_error:
+                    logger.info("Voz neural indisponível: %s", edge_error)
             return self._windows_or_fail(text, language_name, gender, sapi_file, speed, mode)
 
         if engine == "natural":
@@ -198,6 +255,42 @@ class TTSEngine:
                 raise TTSError(f"missing_voice:{language_name}") from piper_error
             logger.info("Piper indisponível; usando voz neural: %s", piper_error)
         return self._edge(text, voice, edge_file, speed, pitch)
+
+    def _grok(self, text: str, language_name: str, gender: str, dest: Path, speed: float) -> Path:
+        key = os.getenv("XAI_API_KEY", "").strip()
+        if not key:
+            raise TTSError("sem chave da xAI")
+        if dest.exists() and dest.stat().st_size > 0:
+            return dest
+        if self.health.is_open("grok"):
+            raise TTSError("voz Grok em pausa")
+        code = LANGUAGES_DICT.get(language_name, "en")
+        language = {"pt": "pt-BR", "zh-CN": "zh"}.get(code, code if code != "auto" else "en")
+        voice_id = "ara" if gender == "Feminina" else "rex"
+        started = time.perf_counter()
+        try:
+            response = httpx.post(
+                "https://api.x.ai/v1/tts",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "text": text,
+                    "voice_id": voice_id,
+                    "language": language,
+                    "speed": max(0.7, min(1.5, speed)),
+                    "optimize_streaming_latency": 1,
+                },
+                timeout=8.0,
+            )
+            response.raise_for_status()
+        except Exception:
+            self.health.failure("grok")
+            raise
+        if not response.content:
+            self.health.failure("grok")
+            raise TTSError("voz Grok vazia")
+        dest.write_bytes(response.content)
+        self.health.success("grok", (time.perf_counter() - started) * 1000)
+        return dest
 
     def _windows_or_fail(
         self,
@@ -225,24 +318,43 @@ class TTSEngine:
     ) -> Path:
         if output.exists() and output.stat().st_size > 0:
             return output
+        if self.health.is_open("edge"):
+            raise TTSError("Voz neural em pausa depois de uma falha recente")
+        started_at = time.monotonic()
+        started = time.perf_counter()
         last_error: Exception | None = None
-        for attempt in range(3):
+
+        async def _save() -> None:
+            await asyncio.wait_for(
+                edge_tts.Communicate(
+                    text,
+                    voice,
+                    rate=edge_rate(speed),
+                    pitch=edge_pitch(pitch_semitones),
+                    volume="+4%",
+                ).save(str(output)),
+                timeout=self.EDGE_TIMEOUT_S,
+            )
+
+        for attempt in range(self.EDGE_ATTEMPTS):
             try:
-                asyncio.run(
-                    edge_tts.Communicate(
-                        text,
-                        voice,
-                        rate=edge_rate(speed),
-                        pitch=edge_pitch(pitch_semitones),
-                        volume="+4%",
-                    ).save(str(output))
-                )
+                asyncio.run(_save())
                 if output.exists() and output.stat().st_size > 0:
+                    self.health.success(
+                        "edge",
+                        (time.perf_counter() - started) * 1000,
+                        started_at=started_at,
+                    )
                     return output
             except Exception as exc:
                 last_error = exc
                 logger.warning("Edge TTS falhou na tentativa %d: %s", attempt + 1, exc)
                 output.unlink(missing_ok=True)
+                self.health.failure("edge")
+                if getattr(exc, "status", None) in {401, 403}:
+                    break
+        if not self.health.is_open("edge"):
+            self.health.failure("edge")
         raise TTSError("O serviço de voz não respondeu.") from last_error
 
     def _piper(
@@ -284,18 +396,17 @@ class TTSEngine:
 
     @staticmethod
     def warm_up(
-        voice_engine: str = "natural",
+        voice_engine: str = "piper",
         language_name: str = "Inglês",
         gender: str = "Feminina",
+        speed: float = 1.0,
     ) -> None:
         if os.name == "nt":
             SapiWorker.shared().ensure_started()
         if voice_engine != "piper":
             return
         try:
-            engine = PiperEngine()
-            engine.ensure_binary()
-            engine.ensure_model(language_name, gender)
+            PiperEngine().warm_up(language_name, gender, round(max(0.5, min(2.0, float(speed))), 2))
         except Exception as exc:
             logger.info("Aquecimento do Piper ignorado: %s", exc)
 
@@ -378,7 +489,7 @@ class AudioPlayer:
                 if step == 0:
                     time.sleep(0.45)
                     uids.append(device_uid)
-                elif step == 1:
+                elif step == 1 and not AudioPlayer._targets_virtual_cable(device_uid):
                     try:
                         extras = AudioDeviceManager().playback_fallbacks(
                             device_uid,
@@ -394,34 +505,78 @@ class AudioPlayer:
             raise last_error
 
     @staticmethod
+    def _targets_virtual_cable(device_uid: str) -> bool:
+        try:
+            info = sd.query_devices(AudioDeviceManager.index_from_uid(device_uid, "sd"))
+        except (OSError, ValueError, KeyError):
+            return False
+        return AudioDeviceManager.is_virtual_output(str(info["name"])) if "name" in info else False
+
+    @staticmethod
+    def _play_write(
+        samples: np.ndarray,
+        sample_rate: int,
+        device_index: int,
+        channels: int,
+        device: object,
+    ) -> None:
+        """O callback fecha o fluxo antes de o CABLE Output copiar o áudio. A escrita espera o cabo."""
+        kwargs: dict[str, object] = {
+            "device": device_index,
+            "samplerate": sample_rate,
+            "channels": channels,
+            "dtype": "float32",
+            "latency": "high",
+        }
+        try:
+            host = sd.query_hostapis()[int(device["hostapi"])]["name"]
+        except (KeyError, IndexError, TypeError, ValueError):
+            host = ""
+        if "wasapi" in str(host).casefold():
+            kwargs["extra_settings"] = sd.WasapiSettings(exclusive=False)
+        with sd.OutputStream(**kwargs) as stream:
+            stream.write(samples)
+            if not AudioPlayer._cancel.is_set():
+                time.sleep(0.2)
+
+    @staticmethod
     def _play_on_device(data: np.ndarray, source_rate: int, device_uid: str) -> None:
-        index = AudioDeviceManager.index_from_uid(device_uid, "sd")
-        device = sd.query_devices(index)
-        target_rate = int(device["default_samplerate"])
-        samples = np.asarray(data, dtype=np.float32)
-        if samples.ndim == 1:
-            samples = samples[:, np.newaxis]
-        max_channels = max(1, int(device["max_output_channels"]))
-        channels = min(samples.shape[1], max_channels)
-        if samples.shape[1] != channels:
-            samples = samples[:, :channels]
-        if source_rate != target_rate and samples.shape[0] > 1:
-            target_size = max(1, round(samples.shape[0] * target_rate / source_rate))
-            old_positions = np.linspace(0.0, 1.0, samples.shape[0], endpoint=False)
-            new_positions = np.linspace(0.0, 1.0, target_size, endpoint=False)
-            samples = np.column_stack(
-                [
-                    np.interp(new_positions, old_positions, samples[:, channel])
-                    for channel in range(samples.shape[1])
-                ]
-            ).astype(np.float32)
-        sd.check_output_settings(
-            device=index,
-            channels=channels,
-            dtype="float32",
-            samplerate=target_rate,
-        )
-        AudioPlayer._play_callback(np.ascontiguousarray(samples), target_rate, index, channels)
+        with com_apartment():
+            index = AudioDeviceManager.index_from_uid(device_uid, "sd")
+            device = sd.query_devices(index)
+            target_rate = int(device["default_samplerate"])
+            samples = np.asarray(data, dtype=np.float32)
+            if samples.ndim == 1:
+                samples = samples[:, np.newaxis]
+            max_channels = max(1, int(device["max_output_channels"]))
+            channels = min(samples.shape[1], max_channels)
+            if samples.shape[1] != channels:
+                samples = samples[:, :channels]
+            if source_rate != target_rate and samples.shape[0] > 1:
+                target_size = max(1, round(samples.shape[0] * target_rate / source_rate))
+                old_positions = np.linspace(0.0, 1.0, samples.shape[0], endpoint=False)
+                new_positions = np.linspace(0.0, 1.0, target_size, endpoint=False)
+                samples = np.column_stack(
+                    [
+                        np.interp(new_positions, old_positions, samples[:, channel])
+                        for channel in range(samples.shape[1])
+                    ]
+                ).astype(np.float32)
+            sd.check_output_settings(
+                device=index,
+                channels=channels,
+                dtype="float32",
+                samplerate=target_rate,
+            )
+            samples = np.ascontiguousarray(samples)
+            name = str(device["name"]) if "name" in device else ""
+            if AudioDeviceManager.is_cable_input(name):
+                try:
+                    AudioPlayer._play_write(samples, target_rate, index, channels, device)
+                    return
+                except Exception:
+                    logger.info("O cabo não aceitou a escrita direta; usando o callback")
+            AudioPlayer._play_callback(samples, target_rate, index, channels)
 
     @staticmethod
     def _play_callback(
@@ -453,19 +608,28 @@ class AudioPlayer:
                 raise sd.CallbackStop()
             position += count
 
-        with sd.OutputStream(
-            device=device_index,
-            samplerate=sample_rate,
-            channels=channels,
-            dtype="float32",
-            latency="high",
-            callback=callback,
-            finished_callback=finished.set,
-        ):
-            deadline = time.monotonic() + samples.shape[0] / sample_rate + 3
-            while not finished.is_set():
-                if AudioPlayer._cancel.is_set() or time.monotonic() >= deadline:
-                    break
-                finished.wait(timeout=0.2)
-            if not finished.is_set() and not AudioPlayer._cancel.is_set():
-                raise RuntimeError("A reprodução de áudio não terminou.")
+        with com_apartment():
+            with sd.OutputStream(
+                device=device_index,
+                samplerate=sample_rate,
+                channels=channels,
+                dtype="float32",
+                latency="high",
+                callback=callback,
+                finished_callback=finished.set,
+            ) as stream:
+                deadline = time.monotonic() + samples.shape[0] / sample_rate + 3
+                while not finished.is_set():
+                    if AudioPlayer._cancel.is_set() or time.monotonic() >= deadline:
+                        break
+                    finished.wait(timeout=0.2)
+                if not finished.is_set() and not AudioPlayer._cancel.is_set():
+                    raise RuntimeError("A reprodução de áudio não terminou.")
+                # Fechar agora descarta o fim que o cabo ainda não tocou.
+                if finished.is_set() and not AudioPlayer._cancel.is_set():
+                    raw = getattr(stream, "latency", 0.2)
+                    try:
+                        held = float(raw)
+                    except (TypeError, ValueError):
+                        held = 0.2
+                    time.sleep(min(0.45, max(0.05, held)))

@@ -3,7 +3,6 @@ import numpy as np
 from core.config import SettingsStore
 from core.whisper_engine import resolve_model
 from domain.metrics import LatencyTracker, ProviderHealth
-from services.audio_manager import PhraseSegmenter
 from services.sapi_worker import sapi_rate
 from services.speech_prosody import edge_pitch, sapi_ssml, spoken_text
 from services.tts_engine import edge_rate, split_for_speech, trim_silence
@@ -57,17 +56,87 @@ def test_spoken_text_closes_the_sentence() -> None:
     assert "rate='1.10'" in ssml
 
 
-def test_pre_roll_keeps_the_first_consonant() -> None:
-    segmenter = PhraseSegmenter(sample_rate=16_000, silence_ms=100, min_speech_ms=30, pre_roll_ms=100)
-    for _ in range(5):
-        assert segmenter.feed(np.zeros(512, dtype=np.float32)) is None
-    onset = np.full(512, 0.004, dtype=np.float32)
-    assert segmenter.feed(onset) is None
-    segmenter.feed(np.full(800, 0.2, dtype=np.float32))
-    phrase = segmenter.feed(np.zeros(1_600, dtype=np.float32))
-    assert phrase is not None
-    assert np.any(np.isclose(phrase, 0.004)), "o início abaixo do limiar precisa entrar na frase"
-    assert phrase.size >= 800 + 1_600 + 1_600
+def test_whisper_receives_the_rolling_prompt_and_hotwords(monkeypatch) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    seen: dict = {}
+
+    class FakeModel:
+        def transcribe(self, _audio, **kwargs):
+            seen.update(kwargs)
+            info = SimpleNamespace(language="pt", language_probability=0.9)
+            return iter([SimpleNamespace(text=" Abre o deploy.")]), info
+
+    monkeypatch.setattr(whisper_module, "_shared_model", lambda _plan: (FakeModel(), threading.Lock()))
+    engine = whisper_module.WhisperEngine("base")
+    audio = np.zeros(16_000, dtype=np.float32)
+    transcript = engine.transcribe(audio, "pt", prompt="falávamos do servidor", hotwords="Kubernetes")
+    assert transcript.text == "Abre o deploy."
+    assert seen["initial_prompt"] is None
+    assert seen["hotwords"] is None
+    assert seen["beam_size"] == 1
+    assert seen["temperature"] == 0.0
+    assert seen["vad_parameters"]["min_silence_duration_ms"] == 500
+    assert seen["vad_parameters"]["speech_pad_ms"] == 200
+    engine.transcribe(audio, "pt")
+    assert seen["initial_prompt"] is None
+    assert seen["hotwords"] is None
+
+
+def test_rejected_neural_voice_is_skipped_until_the_cooldown(monkeypatch, tmp_path) -> None:
+    import services.tts_engine as tts_module
+    from services.tts_engine import TTSEngine, TTSError
+
+    attempts: list[str] = []
+
+    class Rejected(Exception):
+        status = 403
+
+    class RejectingCommunicate:
+        def __init__(self, text, *_args, **_kwargs):
+            attempts.append(text)
+
+        async def save(self, _path):
+            raise Rejected("Invalid response status")
+
+    def no_piper(self, *_args, **_kwargs):
+        raise TTSError("sem Piper")
+
+    monkeypatch.setattr(tts_module.edge_tts, "Communicate", RejectingCommunicate)
+    monkeypatch.setattr(TTSEngine, "prune_cache", staticmethod(lambda: None))
+    monkeypatch.setattr(TTSEngine, "_piper", no_piper)
+    monkeypatch.setattr(
+        TTSEngine, "_windows_sapi", classmethod(lambda cls, text, *_args, **_kwargs: tmp_path / "sapi.wav")
+    )
+    engine = TTSEngine(cache_dir=tmp_path)
+    assert engine.synthesize("primeira frase", "Inglês", "Feminina", "Híbrido") == tmp_path / "sapi.wav"
+    assert engine.synthesize("segunda frase", "Inglês", "Feminina", "Híbrido") == tmp_path / "sapi.wav"
+    assert len(attempts) == 1, "um 403 não se repete, e a frase seguinte vai direto para a voz local"
+
+
+def test_local_mode_never_sends_the_text_to_the_online_voice(monkeypatch, tmp_path) -> None:
+    from services.tts_engine import TTSEngine, TTSError
+
+    online: list[str] = []
+
+    def installing_piper(self, *_args, **_kwargs):
+        raise TTSError("A voz Piper de Inglês ainda está sendo instalada")
+
+    def edge(self, text, *_args, **_kwargs):
+        online.append(text)
+        return tmp_path / "edge.mp3"
+
+    monkeypatch.setattr(TTSEngine, "prune_cache", staticmethod(lambda: None))
+    monkeypatch.setattr(TTSEngine, "_piper", installing_piper)
+    monkeypatch.setattr(TTSEngine, "_edge", edge)
+    monkeypatch.setattr(
+        TTSEngine, "_windows_sapi", classmethod(lambda cls, text, *_args, **_kwargs: tmp_path / "sapi.wav")
+    )
+    engine = TTSEngine(cache_dir=tmp_path)
+    assert engine.synthesize("bom dia", "Inglês", "Feminina", "Local") == tmp_path / "sapi.wav"
+    assert online == [], "o modo Local com Piper não pediu consentimento de nuvem"
+    assert engine.synthesize("boa tarde", "Inglês", "Feminina", "Híbrido") == tmp_path / "edge.mp3"
 
 
 def test_legacy_english_only_model_is_migrated(tmp_path) -> None:
@@ -111,3 +180,41 @@ def test_failed_provider_goes_last_until_cooldown_ends() -> None:
     health.success("DeepL", 120)
     assert health.order(order) == order
     assert health.latency_ms("DeepL") == 120
+    health.failure("Google")
+    health.success("Google", 80, started_at=-1.0)
+    assert health.is_open("Google")
+    health.success("Google", 80, started_at=now["t"])
+    assert health.is_open("Google") is False
+
+
+def test_grok_voice_writes_the_mp3_and_asks_for_ara(monkeypatch, tmp_path) -> None:
+    from services.tts_engine import TTSEngine
+
+    seen: dict[str, object] = {}
+
+    class Response:
+        content = b"ID3grok"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def post(url, headers, json, timeout):
+        seen["url"] = url
+        seen["voice"] = json["voice_id"]
+        seen["language"] = json["language"]
+        seen["auth"] = headers["Authorization"]
+        assert timeout == 8.0
+        return Response()
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test")
+    monkeypatch.setattr("services.tts_engine.httpx.post", post)
+    monkeypatch.setattr(TTSEngine, "prune_cache", staticmethod(lambda: None))
+    path = TTSEngine(cache_dir=tmp_path).synthesize(
+        "boa noite", "Português", "Feminina", "IA", voice_engine="grok"
+    )
+    assert path.read_bytes() == b"ID3grok"
+    assert path.name.endswith(".grok.mp3")
+    assert seen["url"] == "https://api.x.ai/v1/tts"
+    assert seen["voice"] == "ara"
+    assert seen["language"] == "pt-BR"
+    assert seen["auth"] == "Bearer xai-test"

@@ -44,7 +44,7 @@ class AppSettings:
     save_history: bool = False
     monitor_outgoing: bool = False
     cloud_consent: bool = False
-    phrase_silence_ms: int = 380
+    phrase_silence_ms: int = 280
     max_phrase_seconds: float = 12.0
     native_language: str = "Português"
     onboarding_complete: bool = False
@@ -52,7 +52,63 @@ class AppSettings:
     voice_pitch: float = 0.0
     speech_rate: float = 1.0
     last_section: str = "translate"
-    voice_engine: str = "natural"
+    voice_engine: str = "piper"
+    live_captions: str = "auto"
+    appearance: str = "night"
+    llm_provider: str = "groq"
+    pipeline_profile: str = ""
+    offline_asr: str = ""
+    offline_mt: str = ""
+    offline_tts: str = ""
+    follow_pc_ideal: bool = True
+    settings_version: int = 3
+
+
+_WHISPER = {"auto", "fast", "balanced", "accurate", "base", "small", "large-v3-turbo"}
+_MODES = {"Local", "Híbrido", "Nuvem", "IA"}
+_VOICES = {"piper", "natural", "windows", "grok"}
+_CAPTIONS = {"auto", "off", "on"}
+_PROFILES = {"", "local", "hybrid", "cloud", "s2s"}
+_EARS = {"", "alto", "cpp", "leve"}
+_TRANSLATORS = {"", "nllb", "argos"}
+_SPEAKERS = {"", "piper", "xtts"}
+_LOOKS = {"night", "paper"}
+
+
+def _number(value, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _repair(settings: AppSettings) -> AppSettings:
+    """Um settings.json de outro PC ou editado à mão não pode escolher um valor que a tela não tem."""
+    if settings.whisper_model not in _WHISPER:
+        settings.whisper_model = "auto"
+    if settings.translation_mode not in _MODES:
+        settings.translation_mode = "Local"
+    if settings.voice_engine not in _VOICES:
+        settings.voice_engine = "piper"
+    if settings.live_captions not in _CAPTIONS:
+        settings.live_captions = "auto"
+    if settings.pipeline_profile not in _PROFILES:
+        settings.pipeline_profile = ""
+    if settings.offline_asr not in _EARS:
+        settings.offline_asr = ""
+    if settings.offline_mt not in _TRANSLATORS:
+        settings.offline_mt = ""
+    if settings.offline_tts not in _SPEAKERS:
+        settings.offline_tts = ""
+    if settings.appearance not in _LOOKS:
+        settings.appearance = "night"
+    if not isinstance(settings.follow_pc_ideal, bool):
+        settings.follow_pc_ideal = True
+    settings.phrase_silence_ms = max(120, min(2000, int(_number(settings.phrase_silence_ms, 280))))
+    settings.max_phrase_seconds = max(3.0, min(30.0, _number(settings.max_phrase_seconds, 12.0)))
+    settings.speech_rate = max(0.5, min(2.0, _number(settings.speech_rate, 1.0)))
+    settings.voice_pitch = max(-12.0, min(12.0, _number(settings.voice_pitch, 0.0)))
+    return settings
 
 
 class SettingsStore:
@@ -72,9 +128,14 @@ class SettingsStore:
             # distil-large-v3 só reconhece inglês; o modo automático escolhe pelo hardware.
             if raw.get("whisper_model") in {"base", "distil-large-v3"}:
                 settings.whisper_model = "auto"
-            if raw.get("phrase_silence_ms") in {600, 650}:
-                settings.phrase_silence_ms = 380
-            return settings
+            if raw.get("phrase_silence_ms") in {600, 650, 380} and raw.get("settings_version", 1) < 3:
+                settings.phrase_silence_ms = 280
+                settings.settings_version = 3
+            # Até a 0.5.0 o Edge (~2 s por frase) era o padrão. A troca pelo Piper vale uma
+            # vez só: quem voltar ao Edge depois fica com ele.
+            if raw.get("settings_version", 1) < 2 and raw.get("voice_engine") == "natural":
+                settings.voice_engine = "piper"
+            return _repair(settings)
         except (OSError, ValueError, TypeError):
             return AppSettings()
 

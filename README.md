@@ -1,29 +1,32 @@
 # Loon Translator
 
-Tradutor de voz bidirecional para chamadas no Windows. O Loon captura seu
-microfone, traduz sua fala e envia a voz sintetizada para um microfone virtual.
-Ao mesmo tempo, captura o áudio recebido pelo WASAPI loopback, traduz e reproduz
-o resultado no seu fone.
+Tradutor de voz bidirecional para chamadas. O Loon captura seu microfone,
+traduz sua fala e envia a voz sintetizada para uma saída virtual. Ao mesmo
+tempo, captura o áudio da chamada, traduz e reproduz o resultado no seu fone.
+No Windows esse retorno é o WASAPI; no Mac, o BlackHole; no Linux, o monitor
+do PulseAudio ou do PipeWire.
 
 ## Limites importantes
 
 - A tradução ocorre por frases. Depois que você para de falar, a voz traduzida
-  começa em cerca de 1 s numa CPU comum (veja [Latência](#latência)); não
-  existe tradução de voz perfeitamente instantânea.
-- O Loon não instala um driver próprio. Ele usa o
-  [VB-CABLE](https://vb-audio.com/Cable/), um driver assinado e mantido pela
-  VB-Audio.
-- A captura recebida usa o áudio inteiro do dispositivo escolhido. Para evitar
-  eco, o Loon pausa essa captura enquanto reproduz a tradução recebida.
+  começa em 0,9 a 1 s numa CPU comum com voz local (Piper, o padrão, ou
+  Windows) e em cerca de 2 s com a voz neural online (veja
+  [Latência](#latência)); não existe tradução de voz perfeitamente instantânea.
+- No Linux, com a licença aberta, o Loon cria a saída e o microfone "Loon Translator" e os remove ao fechar. No Windows e no macOS um cabo visível para o jogo é um driver assinado pelo sistema; até esse driver existir, o Windows segue com o [VB-CABLE](https://vb-audio.com/Cable/) e o Mac com o BlackHole. Um driver sem assinatura não aparece na lista de áudio.
+- A captura recebida usa o áudio inteiro do dispositivo escolhido. Quando o
+  retorno da chamada e o fone são o mesmo aparelho, o Loon pausa essa captura
+  enquanto reproduz a tradução recebida, para não traduzir a própria voz. A
+  frase que já estava sendo dita antes disso é enviada, não descartada.
 - Use fones de ouvido. Alto-falantes podem voltar ao microfone físico e causar
   eco acústico.
 
 ## Requisitos
 
-- Windows 10 ou 11, 64 bits
+- Windows 10 ou 11 (64 bits), macOS 12 ou mais novo, ou Linux com PulseAudio ou PipeWire. Versões mais antigas abrem a janela, mas o áudio da chamada não está garantido: o Python 3.11 e o PortAudio não cabem nelas.
 - Python 3.11 ou 3.12 (Python 3.14 ainda não é suportado pela stack completa)
 - VB-CABLE instalado e computador reiniciado
-- Internet para tradução em nuvem e Edge TTS
+- Internet para tradução em nuvem e Edge TTS, e uma vez para baixar a voz Piper
+  (~21 MB do programa e ~60 MB por idioma)
 - Aproximadamente 1 GB livre para ambiente, modelo e cache
 
 ## Instalação
@@ -94,11 +97,12 @@ Google do `deep-translator`. A voz é gerada pelo Edge TTS.
 
 É o padrão para novas instalações e não possui custo por conversa. Abra
 **Pacotes de idiomas** e baixe uma vez os pares desejados. A tradução usa
-inglês como interligação entre os idiomas instalados. A voz usa primeiro o
-pacote de voz instalado no Windows; se escolher **Natural local (Piper)**, o
-aplicativo baixa uma voz neural (~60 MB) e passa a falar offline com qualidade
-bem melhor que a voz clássica do Windows. Também é possível apontar um modelo
-com `PIPER_MODEL`.
+inglês como interligação entre os idiomas instalados. A voz padrão é a
+**Natural local (Piper)**: na primeira vez o aplicativo baixa uma voz neural
+(~60 MB por idioma) em segundo plano e, até terminar, as frases saem pela voz
+do Windows. Hindi, japonês e coreano ainda não têm voz Piper e também usam a
+voz do Windows; neste modo nenhuma frase vai para a voz online. Também é
+possível apontar um modelo com `PIPER_MODEL`.
 
 Os 12 idiomas de lançamento são português, inglês, espanhol, francês, alemão,
 italiano, hindi, mandarim, japonês, coreano, russo e árabe. O mecanismo não
@@ -128,15 +132,72 @@ falha não atrase as frases seguintes.
 
 ## Latência
 
-Medido nesta máquina (CPU, sem GPU) com a mesma frase em português de 9 s,
-do fim da fala até o início da voz traduzida em inglês:
+A partir da 0.6.0 a medida é de ponta a ponta: a frase é tocada em tempo real,
+em blocos de 32 ms, pelo detector de voz e pelo pipeline inteiro, e o relógio
+corre do fim da fala até o primeiro áudio traduzido ficar pronto. Isso inclui
+a espera para confirmar a pausa (380 ms), que a medida até a 0.5.0 não contava.
+CPU sem GPU, Whisper `base` int8, tradução Argos local, português → inglês,
+mediana de 3 a 5 rodadas (faixa entre execuções):
 
-| Versão | Início da voz | Transcrição                          |
-|--------|---------------|--------------------------------------|
-| 0.3.0  | 7,1 – 10,7 s  | errada (`distil-large-v3` só entende inglês) |
-| 0.4.0  | 0,8 – 1,0 s   | correta (`base`, int8, 8 threads)    |
+| Voz                    | Esperando a pausa | Transcrevendo na pausa (0.6.0) |
+|------------------------|-------------------|--------------------------------|
+| Windows (SAPI)         | 1,07–1,20 s       | 0,87–0,92 s                    |
+| Piper (neural local)   | 1,17–1,28 s       | 0,94–0,99 s                    |
+| Edge (neural online)   | 2,28 s            | 1,95 s                         |
 
-De onde veio o ganho:
+O Edge leva ~1,1 s por sentença só na rede (conexão nova a cada sentença); por
+isso, a partir da 0.6.0, a voz padrão é o Piper (~190 ms por sentença).
+
+### O que mudou na 0.6.0
+
+- **Detector de voz Silero** (o ONNX que já vem no faster-whisper, ~0,1 ms por
+  quadro de 32 ms) no lugar do limiar de volume: música, teclado e ruído não
+  chegam ao Whisper. Histerese (entra com 0,5, sai abaixo de 0,35) para uma
+  sílaba fraca não partir a frase.
+- **Pré-roll de 320 ms** em buffer circular: o ataque das consoantes (p, t, k,
+  s) entra na frase. A frase termina depois de 380 ms de silêncio; frases longas
+  aceitam 200 ms depois de 60% do limite e, no limite, são cortadas no quadro
+  de menor probabilidade de voz, com 96 ms de sobreposição.
+- **Transcrição na pausa**: aos 96 ms de silêncio o Whisper já começa. Se a
+  pessoa não voltar a falar, o texto é reaproveitado quando a pausa se
+  confirma (~280 ms a menos); se voltar, o resultado vira só legenda.
+- **Pipeline assíncrono** produtor–consumidor: captura em threads → filas
+  `asyncio` → Whisper num executor de uma thread com prioridade (frase fechada
+  antes de adiantamento e de legenda) → tradução e voz em executores →
+  reprodução por sentido. A versão em português/inglês do histórico sai fora do
+  caminho da voz.
+- **Contexto de 15 s** como prompt do Whisper (concordância, nomes, grafia).
+  Saiu o prompt fixo de saudação, que vazava para frases curtas ("Pode falar"
+  sem ninguém ter dito).
+- **Glossário** antes e depois da tradução (marcas, termos de TI, gírias como
+  "zap" → WhatsApp, "solicitação de pull" → pull request). Termos próprios vão
+  em `%APPDATA%\LoonTranslator\glossary.json`:
+
+  ```json
+  {
+    "terms": ["Kubernetes", "Loon Translator"],
+    "fix": {"cuber netes": "Kubernetes"},
+    "after": {"pt": {"solicitação de pull": "pull request"}}
+  }
+  ```
+
+  `terms` fixa a grafia e também vai como dica (hotwords) para o Whisper.
+- **Reamostragem com filtro anti-aliasing** (48 kHz → 16 kHz): chiado e
+  sibilantes acima de 8 kHz não dobram para dentro da faixa da voz.
+- **Piper em processo aberto**: o modelo carrega uma vez (~430 ms → 100–160 ms
+  por sentença).
+- **Piper é a voz padrão**: instalações que estavam no padrão anterior (Edge)
+  passam para o Piper uma única vez; quem voltar ao Edge em **Qualidade da
+  voz** fica com ele. O download roda em segundo plano, sem segurar nenhuma
+  frase, e no modo Local a falta do Piper nunca leva o texto para a voz online.
+- **Disjuntor na voz online**: se o Edge recusar (403) ou cair, as frases
+  seguintes vão direto para a voz local por 2 min, em vez de esperar
+  ~1,3 s por tentativa em cada frase.
+- **Legenda ao vivo** (texto provisório e tradução prévia sob o status de cada
+  sentido). Em `auto`, a legenda parcial só liga quando o Whisper é rápido
+  (GPU); na CPU ela vem das pausas, que já são transcritas.
+
+Até a 0.5.0:
 
 - **Reconhecimento**: o seletor de fala (Automático, Rápido, Equilibrado,
   Preciso) escolhe o modelo pelo hardware. O Whisper sempre processa uma janela
@@ -150,13 +211,13 @@ De onde veio o ganho:
   O(n·janela) (455 ms → 45 ms).
 - **Velocidade adaptativa**: com frases na fila, a fala acelera 8% por frase
   pendente (até 1,5×) para não acumular atraso.
-- **Pré-roll de 200 ms** no detector de frases: a primeira sílaba não é cortada.
 - **Cache LRU** de traduções (256 entradas) e keep-alive HTTP.
 
 Para medir no seu computador:
 
 ```powershell
 python -m tools.benchmark_latency --models base small --legacy
+python -m tools.benchmark_latency --streaming --voice windows   # ou piper, natural
 ```
 
 O histórico da interface mostra cada etapa (`STT · MT · TTS`) e os percentis
@@ -179,8 +240,10 @@ um onde as suas propriedades importam:
 
 Outros conceitos aplicados: fila circular (histórico de latência), cache LRU,
 disjuntor (circuit breaker) com média móvel exponencial da latência dos
-provedores, pipeline produtor–consumidor com filas limitadas, soma de prefixos
-e buffer de pré-roll.
+provedores, pipeline produtor–consumidor com filas limitadas e fila de
+prioridade, soma de prefixos, buffer circular de quadros para o pré-roll,
+detector de voz com histerese, filtro FIR (sinc janelado) para reamostragem e
+LocalAgreement-2 para estabilizar a legenda ao vivo.
 
 Benchmark dos métodos (tempo, C(n), M(n) em dados aleatórios, ordenados,
 invertidos e quase ordenados):
@@ -261,7 +324,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
 O script roda os testes, gera o ícone (`tools/make_icon.py`), empacota com o
 PyInstaller em `%LOCALAPPDATA%\LoonBuild` (fora do OneDrive, que trava a pasta
 de build) e compila `installer\LoonTranslator.iss` com o Inno Setup (instalado
-pelo winget se faltar). O resultado é `release\LoonTranslator-0.5.0-Setup.exe`
+pelo winget se faltar). O resultado é `release\LoonTranslator-<versão>-Setup.exe`
 com o SHA-256 ao lado.
 
 O instalador não pede administrador, cria atalhos, mostra o guia

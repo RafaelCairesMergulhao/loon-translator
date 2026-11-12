@@ -1,0 +1,251 @@
+{
+  "pt": {
+    "hotwords": ["tá ligado", "mano", "fechou", "vaza", "bagulho", "caralho", "porra", "qual é"],
+    "to": {
+      "en": {
+        "tá ligado": "you know what I mean",
+        "qual é": "what's the deal",
+        "mano": "bro",
+        "fechou": "deal",
+        "vaza": "get out of here",
+        "bagulho": "stuff",
+        "troço": "thing",
+        "caralho": "fuck",
+        "porra": "damn"
+      },
+      "es": {
+        "mano": "wey",
+        "tá ligado": "¿me explico?",
+        "fechou": "sale",
+        "vaza": "lárgate",
+        "caralho": "joder"
+      },
+      "fr": {
+        "mano": "mec",
+        "tá ligado": "tu vois",
+        "fechou": "ça marche",
+        "vaza": "dégage",
+        "caralho": "putain"
+      }
+    }
+  },
+  "en": {
+    "hotwords": ["no cap", "bet", "ghosting", "salty", "bruh", "for real"],
+    "to": {
+      "pt": {
+        "no cap": "sem mentira",
+        "bet": "combinado",
+        "bruh": "mano",
+        "salty": "irritado",
+        "ghosting": "sumir sem responder",
+        "for real": "na moral"
+      },
+      "es": {
+        "no cap": "en serio",
+        "bruh": "wey",
+        "bet": "sale",
+        "salty": "picado"
+      },
+      "fr": {
+        "no cap": "sans dec",
+        "bruh": "mec",
+        "bet": "ça marche",
+        "salty": "vexé"
+      }
+    }
+  },
+  "es": {
+    "hotwords": ["tío", "vale", "joder", "mola", "wey", "chido", "órale", "no manches"],
+    "to": {
+      "pt": {
+        "tío": "cara",
+        "vale": "beleza",
+        "joder": "caralho",
+        "mola": "é legal",
+        "wey": "mano",
+        "güey": "mano",
+        "chido": "daora",
+        "órale": "bora",
+        "no manches": "não brinca"
+      },
+      "en": {
+        "tío": "dude",
+        "vale": "alright",
+        "joder": "fuck",
+        "mola": "that's cool",
+        "wey": "bro",
+        "güey": "bro",
+        "chido": "cool",
+        "órale": "let's go",
+        "no manches": "no way"
+      }
+    }
+  },
+  "fr": {
+    "hotwords": ["meuf", "mec", "wesh", "osef", "boulot", "putain", "merde"],
+    "to": {
+      "pt": {
+        "meuf": "mina",
+        "mec": "cara",
+        "wesh": "qual é",
+        "osef": "tanto faz",
+        "boulot": "trabalho",
+        "putain": "porra",
+        "merde": "merda"
+      },
+      "en": {
+        "meuf": "girl",
+        "mec": "guy",
+        "wesh": "yo",
+        "osef": "whatever",
+        "boulot": "work",
+        "putain": "fuck",
+        "merde": "shit"
+      }
+    }
+  },
+  "de": {
+    "hotwords": ["alter", "krass", "geil", "scheiße", "digga"],
+    "to": {
+      "pt": {
+        "alter": "cara",
+        "krass": "sinistro",
+        "geil": "irado",
+        "scheiße": "merda",
+        "digga": "mano"
+      },
+      "en": {
+        "alter": "dude",
+        "krass": "crazy",
+        "geil": "awesome",
+        "scheiße": "shit",
+        "digga": "bro"
+      }
+    }
+  },
+  "it": {
+    "hotwords": ["dai", "figo", "cazzo", "boh", "cavolo"],
+    "to": {
+      "pt": {
+        "dai": "qual é",
+        "figo": "legal",
+        "cazzo": "caralho",
+        "boh": "sei lá",
+        "cavolo": "poxa"
+      },
+      "en": {
+        "dai": "come on",
+        "figo": "cool",
+        "cazzo": "fuck",
+        "boh": "I don't know",
+        "cavolo": "damn"
+      }
+    }
+  },
+  "hi": {
+    "hotwords": ["yaar", "bhai", "arre", "bakwas"],
+    "to": {
+      "pt": {
+        "yaar": "cara",
+        "bhai": "mano",
+        "arre": "oxe",
+        "bakwas": "besteira"
+      },
+      "en": {
+        "yaar": "dude",
+        "bhai": "bro",
+        "arre": "hey",
+        "bakwas": "nonsense"
+      }
+    }
+  },
+  "ar": {
+    "hotwords": ["يلا", "حبيبي", "والله", "خلاص", "yalla"],
+    "to": {
+      "pt": {
+        "يلا": "bora",
+        "yalla": "bora",
+        "حبيبي": "meu bem",
+        "habibi": "meu bem",
+        "والله": "juro",
+        "خلاص": "chega"
+      },
+      "en": {
+        "يلا": "let's go",
+        "yalla": "let's go",
+        "حبيبي": "dear",
+        "habibi": "dear",
+        "والله": "I swear",
+        "خلاص": "enough"
+      }
+    }
+  },
+  "ja": {
+    "hotwords": ["やばい", "まじ", "うざい", "すげえ"],
+    "to": {
+      "pt": {
+        "やばい": "sinistro",
+        "まじ": "sério",
+        "うざい": "irritante",
+        "すげえ": "muito"
+      },
+      "en": {
+        "やばい": "crazy",
+        "まじ": "seriously",
+        "うざい": "annoying",
+        "すげえ": "awesome"
+      }
+    }
+  },
+  "zh": {
+    "hotwords": ["牛逼", "卧槽", "搞定", "哥们"],
+    "to": {
+      "pt": {
+        "牛逼": "demais",
+        "卧槽": "caralho",
+        "搞定": "resolvido",
+        "哥们": "mano"
+      },
+      "en": {
+        "牛逼": "badass",
+        "卧槽": "holy shit",
+        "搞定": "sorted",
+        "哥们": "bro"
+      }
+    }
+  },
+  "ru": {
+    "hotwords": ["блин", "капец", "чувак", "жесть"],
+    "to": {
+      "pt": {
+        "блин": "poxa",
+        "капец": "ferrou",
+        "чувак": "cara",
+        "жесть": "sinistro"
+      },
+      "en": {
+        "блин": "damn",
+        "капец": "we're screwed",
+        "чувак": "dude",
+        "жесть": "that's brutal"
+      }
+    }
+  },
+  "ko": {
+    "hotwords": ["대박", "헐", "진짜", "씨발"],
+    "to": {
+      "pt": {
+        "대박": "demais",
+        "헐": "nossa",
+        "진짜": "sério",
+        "씨발": "porra"
+      },
+      "en": {
+        "대박": "awesome",
+        "헐": "whoa",
+        "진짜": "for real",
+        "씨발": "fuck"
+      }
+    }
+  }
+}

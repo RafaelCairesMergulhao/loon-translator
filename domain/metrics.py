@@ -59,8 +59,12 @@ class ProviderHealth:
         self._latency: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def success(self, name: str, milliseconds: float) -> None:
+    def success(self, name: str, milliseconds: float, *, started_at: float | None = None) -> None:
         with self._lock:
+            failed = self._failed_at.get(name)
+            # Uma tentativa que começou antes da queda não pode reabrir o disjuntor.
+            if failed is not None and started_at is not None and started_at < failed:
+                return
             self._failed_at.pop(name, None)
             previous = self._latency.get(name)
             self._latency[name] = (

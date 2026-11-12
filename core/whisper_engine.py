@@ -13,15 +13,6 @@ from faster_whisper import WhisperModel
 
 logger = logging.getLogger(__name__)
 
-CALL_PROMPTS = {
-    "pt": "Alô, oi, tudo bem? Pode falar.",
-    "en": "Hello, hi, how are you? Go ahead.",
-    "es": "Hola, ¿qué tal? Adelante.",
-    "fr": "Allô, bonjour, comment ça va ?",
-    "de": "Hallo, wie geht's? Sprechen Sie.",
-    "it": "Pronto, ciao, come va?",
-}
-
 # distil-large-v3 foi destilado só com inglês: em português, 7 s por frase e texto errado.
 # O Whisper sempre codifica uma janela de 30 s, então o custo por frase quase não
 # depende do tamanho da fala: em CPU, base leva ~0,6 s e small ~2 s.
@@ -124,7 +115,15 @@ class WhisperEngine:
                 pass
         return time.perf_counter() - started
 
-    def transcribe(self, audio: np.ndarray, language: str | None = None) -> Transcript:
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        language: str | None = None,
+        prompt: str | None = None,
+        hotwords: str | None = None,
+    ) -> Transcript:
+        """Converte o áudio em texto cru. Lista de palavras e fala anterior não entram: o modelo inventa essas palavras no ruído."""
+        del prompt, hotwords
         model, lock = _shared_model(self.plan)
         with lock:
             segments, info = model.transcribe(
@@ -134,16 +133,18 @@ class WhisperEngine:
                 without_timestamps=True,
                 temperature=0.0,
                 condition_on_previous_text=False,
-                # Sem idioma definido, um prompt em inglês puxaria a fala para o inglês.
-                initial_prompt=CALL_PROMPTS.get(language or ""),
+                initial_prompt=None,
+                hotwords=None,
                 vad_filter=True,
                 vad_parameters={
-                    "min_silence_duration_ms": 300,
-                    "speech_pad_ms": 150,
+                    "min_silence_duration_ms": 500,
+                    "speech_pad_ms": 200,
                 },
                 hallucination_silence_threshold=1.5,
             )
-            text = " ".join(segment.text.strip() for segment in segments).strip()
+            text = " ".join(
+                segment.text.strip() for segment in segments if WhisperEngine._trusted(segment)
+            ).strip()
         text = WhisperEngine.normalize_speech(text)
         if not WhisperEngine.usable(text):
             text = ""
@@ -155,17 +156,18 @@ class WhisperEngine:
 
     @staticmethod
     def normalize_speech(text: str) -> str:
-        """Collapses a repeated sentence and drops a Whisper loop."""
+        """Uma frase dita uma vez. O Whisper, num áudio longo, cola a mesma oração várias vezes."""
         pieces = [
             piece.strip()
-            for piece in re.split(r"(?<=[.!?])\s+", text.strip())
+            for piece in re.split(r"(?<=[.!?,;])\s*", text.strip())
             if piece.strip()
         ]
         if not pieces:
             return ""
         folded = [piece.casefold() for piece in pieces]
-        _phrase, count = Counter(folded).most_common(1)[0]
-        if count >= 4 and count / len(folded) >= 0.6:
+        phrase, count = Counter(folded).most_common(1)[0]
+        short_phrase = len(phrase.split()) <= 4
+        if count >= 4 and count / len(folded) >= 0.6 and len(set(folded)) == 1 and short_phrase:
             return ""
         collapsed: list[str] = []
         previous = ""
@@ -177,9 +179,67 @@ class WhisperEngine:
         words = " ".join(collapsed).split()
         if WhisperEngine._word_loop(words):
             return ""
+        words = WhisperEngine._collapse_clause(words)
+        if WhisperEngine._mixed_loop(words):
+            return ""
         if len(words) > 40:
             words = words[:40]
         return " ".join(words)
+
+    @staticmethod
+    def _collapse_clause(words: list[str]) -> list[str]:
+        """Reduz uma oração de 4 ou mais palavras repetida no meio da frase a uma cópia."""
+        folded = [word.casefold().strip(".,!?;:¿¡") for word in words]
+        total = len(folded)
+        best: tuple[int, int, int, int] | None = None
+        for size in range(4, 13):
+            index = 0
+            while index + size * 3 <= total:
+                pattern = tuple(folded[index : index + size])
+                if not any(pattern):
+                    index += 1
+                    continue
+                count = 1
+                cursor = index + size
+                while cursor + size <= total and tuple(folded[cursor : cursor + size]) == pattern:
+                    count += 1
+                    cursor += size
+                coverage = cursor - index
+                if count >= 3 and coverage / total >= 0.5 and (
+                    best is None or coverage > best[0] or (coverage == best[0] and size < best[2])
+                ):
+                    best = (coverage, index, size, cursor)
+                index += 1
+        if best is None:
+            return words
+        _coverage, index, size, cursor = best
+        return words[:index] + words[index : index + size] + words[cursor:]
+
+    @staticmethod
+    def _mixed_loop(words: list[str]) -> bool:
+        """A mesma oração reaparece no meio de outras palavras: alucinação, não fala."""
+        folded = [word.casefold().strip(".,!?;:¿¡") for word in words]
+        total = len(folded)
+        if total < 12:
+            return False
+        for size in range(4, 8):
+            seen: set[tuple[str, ...]] = set()
+            for start in range(total - size + 1):
+                pattern = tuple(folded[start : start + size])
+                if pattern in seen or not any(pattern):
+                    continue
+                seen.add(pattern)
+                count = 0
+                index = 0
+                while index + size <= total:
+                    if tuple(folded[index : index + size]) == pattern:
+                        count += 1
+                        index += size
+                    else:
+                        index += 1
+                if count >= 3 and count * size / total >= 0.4:
+                    return True
+        return False
 
     @staticmethod
     def _word_loop(words: list[str]) -> bool:
@@ -202,11 +262,57 @@ class WhisperEngine:
                 index += 1
         return False
 
+    _NOISE = frozenset(
+        {
+            "a",
+            "ah",
+            "as",
+            "da",
+            "das",
+            "de",
+            "do",
+            "dos",
+            "e",
+            "eh",
+            "em",
+            "é",
+            "mm",
+            "mmm",
+            "na",
+            "no",
+            "o",
+            "oh",
+            "os",
+            "ou",
+            "que",
+            "se",
+            "um",
+            "uma",
+        }
+    )
+
     @staticmethod
     def usable(text: str) -> bool:
-        words = [word for word in text.casefold().split() if word.strip(".,!?")]
+        words = [word for word in text.casefold().split() if word.strip(".,!?;:")]
         if len(words) < 1:
             return False
         if len(words) >= 4 and len(set(words)) == 1:
             return False
+        bare = [word.strip(".,!?;:") for word in words]
+        if all(word in WhisperEngine._NOISE for word in bare):
+            return False
+        only = bare[0]
+        if len(bare) == 1 and (len(only) <= 1 or only in WhisperEngine._NOISE):
+            return False
         return True
+
+    @staticmethod
+    def _trusted(segment: object) -> bool:
+        """Som sem fala, ou um palpite fraco, não vira frase."""
+        if float(getattr(segment, "no_speech_prob", 0.0) or 0.0) >= 0.6:
+            return False
+        if float(getattr(segment, "avg_logprob", 0.0) or 0.0) < -1.0:
+            return False
+        if float(getattr(segment, "compression_ratio", 0.0) or 0.0) > 2.4:
+            return False
+        return bool(str(getattr(segment, "text", "")).strip())

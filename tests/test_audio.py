@@ -4,39 +4,33 @@ import pytest
 import services.tts_engine as tts_module
 from services.audio_devices import AudioDevice, AudioDeviceManager
 from services.tts_engine import AudioPlayer
-from services.audio_manager import PhraseSegmenter, resample_mono
+from services.audio_manager import resample_mono
 
 
 def test_whisper_drops_a_repeated_hallucination() -> None:
     from core.whisper_engine import WhisperEngine
 
     assert WhisperEngine.usable("Alô, tudo bem?")
+    assert WhisperEngine.usable("Sim.")
+    assert not WhisperEngine.usable("e")
+    assert not WhisperEngine.usable("e a")
+    assert not WhisperEngine.usable("um")
     assert not WhisperEngine.usable("obrigado obrigado obrigado obrigado")
     assert WhisperEngine.normalize_speech("Não pode falar. " * 50) == ""
     assert WhisperEngine.normalize_speech("Oi. Oi. Tudo bem.") == "Oi. Tudo bem."
     loop = "Eu não sei se " + "o que é " * 20
     assert WhisperEngine.normalize_speech(loop) == ""
-
-
-def test_phrase_segmenter_emits_after_silence() -> None:
-    segmenter = PhraseSegmenter(
-        sample_rate=16_000,
-        silence_ms=100,
-        min_speech_ms=30,
-        max_seconds=2,
+    repeated = "e já estão sejam assim " * 8
+    assert WhisperEngine.normalize_speech(repeated) == "e já estão sejam assim"
+    comma = "eu não vou deixar assim, " * 6
+    assert WhisperEngine.normalize_speech(comma) == "eu não vou deixar assim,"
+    mixed = (
+        "Se o jage ou vai jogar nela. Se o bom se vai jogar nela. "
+        "Se o bom se vai jogar. Se se for dar caro. Se o bom se vai jogar. "
+        "Se se for dar caro. Se o bom se vai jogar."
     )
-    speech = np.full(800, 0.2, dtype=np.float32)
-    silence = np.zeros(1_600, dtype=np.float32)
-    assert segmenter.feed(speech) is None
-    phrase = segmenter.feed(silence)
-    assert phrase is not None
-    assert phrase.size == 2_400
-
-
-def test_phrase_segmenter_ignores_short_noise() -> None:
-    segmenter = PhraseSegmenter(sample_rate=16_000, silence_ms=50, min_speech_ms=100)
-    segmenter.feed(np.full(400, 0.2, dtype=np.float32))
-    assert segmenter.feed(np.zeros(800, dtype=np.float32)) is None
+    assert WhisperEngine.normalize_speech(mixed) == ""
+    assert WhisperEngine.normalize_speech("Vamos entrar agora e olhar o que está aberto do outro lado.") != ""
 
 
 def test_resample_stereo_to_mono_16khz() -> None:
@@ -153,7 +147,8 @@ def test_playback_retries_when_the_headset_refuses_to_start(monkeypatch: pytest.
 
 
 def test_cable_input_is_not_the_headphone_or_the_speaker_end() -> None:
-    assert AudioDeviceManager.is_cable_input("CABLE In 16 Ch (2- VB-Audio Virtual Cable)")
+    assert AudioDeviceManager.is_cable_input("CABLE Input (VB-Audio Virtual Cable)")
+    assert not AudioDeviceManager.is_cable_input("CABLE In 16ch (VB-Audio Virtual Cable)")
     assert not AudioDeviceManager.is_cable_input("Fones de ouvido (PFO05BTSG)")
     assert not AudioDeviceManager.is_cable_input("Alto-falantes (2- VB-Audio Virtual Cable)")
     assert not AudioDeviceManager.is_cable_input("CABLE Output (2- VB-Audio Virtual Cable)")
@@ -172,7 +167,7 @@ def test_a_saved_headphone_is_replaced_by_the_wasapi_cable() -> None:
     )
     mme_cable = AudioDevice(
         uid="sd:6",
-        name="CABLE In 16 Ch (2- VB-Audio Virtual Cable)",
+        name="CABLE Input (VB-Audio Virtual Cable)",
         kind="virtual",
         channels=16,
         sample_rate=44_100,
@@ -180,7 +175,7 @@ def test_a_saved_headphone_is_replaced_by_the_wasapi_cable() -> None:
     )
     wasapi_cable = AudioDevice(
         uid="sd:19",
-        name="CABLE In 16 Ch (2- VB-Audio Virtual Cable)",
+        name="CABLE Input (VB-Audio Virtual Cable)",
         kind="virtual",
         channels=2,
         sample_rate=48_000,
@@ -189,6 +184,27 @@ def test_a_saved_headphone_is_replaced_by_the_wasapi_cable() -> None:
     cables = manager.prefer_shared_mode([mme_cable, wasapi_cable])
     assert cables == [wasapi_cable]
     assert manager.select_device("cable", [phones, *cables], "sd:5") is wasapi_cable
+
+
+def test_the_16_channel_point_is_not_what_discord_hears() -> None:
+    manager = AudioDeviceManager()
+    wide = AudioDevice(
+        uid="sd:21",
+        name="CABLE In 16ch (VB-Audio Virtual Cable)",
+        kind="virtual",
+        channels=16,
+        sample_rate=48_000,
+        hostapi="Windows WASAPI",
+    )
+    stereo = AudioDevice(
+        uid="sd:19",
+        name="CABLE Input (VB-Audio Virtual Cable)",
+        kind="virtual",
+        channels=2,
+        sample_rate=48_000,
+        hostapi="Windows WASAPI",
+    )
+    assert manager.select_device("cable", [wide, stereo], "sd:21") is stereo
 
 
 def test_shared_mode_keeps_one_headset_and_skips_the_mapper() -> None:
@@ -242,7 +258,7 @@ def test_playback_falls_back_to_speakers_when_the_headset_is_listed() -> None:
     )
     cable = AudioDevice(
         uid="sd:19",
-        name="CABLE In 16 Ch (VB-Audio Virtual Cable)",
+        name="CABLE Input (VB-Audio Virtual Cable)",
         kind="virtual",
         channels=2,
         sample_rate=48_000,
@@ -270,6 +286,28 @@ def test_saved_headphone_loopback_yields_to_the_cable() -> None:
         hostapi="Windows WASAPI",
     )
     assert manager.select_device("loopback", [phones, cable], "wasapi:4") is cable
+
+
+def test_echo_guard_only_when_the_loopback_hears_the_translation() -> None:
+    assert AudioDeviceManager.shares_endpoint(
+        "Fones de ouvido (PFO05BTSG) [Loopback]", "Fones de ouvido (PFO05BTSG)"
+    )
+    assert AudioDeviceManager.shares_endpoint(
+        "Alto-falantes (2- Realtek(R) Audio) [Loopback]", "Alto-falantes (2- Realtek(R) Au"
+    ), "o MME corta o nome em 31 caracteres"
+    assert not AudioDeviceManager.shares_endpoint(
+        "CABLE Output (VB-Audio Virtual Cable)", "Fones de ouvido (PFO05BTSG)"
+    )
+    assert AudioDeviceManager.cable_feeds_loopback(
+        "CABLE Output (VB-Audio Virtual Cable)", "CABLE Input (VB-Audio Virtual Cable)"
+    )
+    assert not AudioDeviceManager.cable_feeds_loopback(
+        "CABLE Output (VB-Audio Virtual Cable)", "Fones de ouvido (PFO05BTSG)"
+    )
+    assert AudioDeviceManager.shares_endpoint(
+        "CABLE Output (VB-Audio Virtual Cable)", "Mapeador de som da Microsoft - Output"
+    ), "o mapeador pode tocar no mesmo aparelho do loopback"
+    assert AudioDeviceManager.shares_endpoint("", "Fones de ouvido")
 
 
 def test_device_uid_validation() -> None:

@@ -4,8 +4,10 @@ Fora do modo IA, o Loon não depende de um modelo generativo. O tom da
 conversa escolhe o registro (casual, formal ou viagem) e este módulo troca a
 expressão pelo sentido real antes da tradução automática. Trechos
 desconhecidos seguem para o Argos, DeepL ou Google já com a grafia coloquial
-normalizada. No modo IA, o LLM recebe a frase inteira e este módulo só entra
-quando o LLM falha.
+normalizada. No modo IA, o LLM recebe só as gírias que apareceram na frase.
+
+A tabela cobre os doze idiomas do app. Uma gíria entra na frase quando ela
+é dita; o resto do dicionário não vai para o modelo e não aumenta o atraso.
 """
 
 from __future__ import annotations
@@ -50,6 +52,8 @@ class Idiom:
     casual: dict[str, str]
     formal: dict[str, str]
     travel: dict[str, str]
+    # Palavra que também tem sentido literal: só vira dica para o modelo, sem troca automática.
+    hint_only: bool = False
 
 
 def _pt(forms: tuple[str, ...], gloss: str, casual: str, formal: str, travel: str) -> Idiom:
@@ -61,15 +65,22 @@ def _en(forms: tuple[str, ...], gloss: str, casual: str, formal: str, travel: st
 
 
 IDIOMS: tuple[Idiom, ...] = (
-    _pt(("tá de boa", "ta de boa", "tô de boa", "to de boa", "de boa"), "está tudo bem", "it's all good", "everything is fine", "no problem"),
+    _pt(("tá de boa", "ta de boa", "tô de boa", "to de boa", "de boa", "de boas"), "está tudo bem", "it's all good", "everything is fine", "no problem"),
     _pt(("sem crise",), "não há problema", "no worries", "that is not a problem", "no problem"),
     _pt(("valeu, falou", "valeu falou"), "obrigado, tchau", "thanks, see ya", "thank you, goodbye", "thanks, bye"),
     _pt(("valeu",), "obrigado", "thanks", "thank you", "thank you"),
     # Adjetivo: trocar pelo sinônimo e traduzir a frase inteira preserva a gramática ("muito daora").
-    Idiom("pt", ("daora", "da hora"), "legal", {}, {}, {}),
+    Idiom("pt", ("daora", "dahora", "da hora"), "legal", {}, {}, {}),
     _pt(("tá ligado", "ta ligado", "sacou"), "entende?", "you know?", "do you understand?", "you know?"),
     _pt(("beleza", "blz"), "tudo bem", "alright", "very well", "okay"),
     _pt(("fechou",), "combinado", "deal", "agreed", "okay"),
+    _pt(
+        ("saiu, mas demorou muito para sair", "saiu mas demorou muito para sair"),
+        "a fala saiu, mas demorou",
+        "it came out, but it took a long time to come out",
+        "it came out, but it took a long time to come out",
+        "it came out, but it took a long time to come out",
+    ),
     _pt(("bora",), "vamos", "let's go", "let us begin", "let's go"),
     _pt(("show de bola",), "muito bom", "awesome", "excellent", "great"),
     _pt(("mano", "véi", "vei", "parça"), "amigo", "dude", "my friend", "buddy"),
@@ -134,6 +145,38 @@ IDIOMS: tuple[Idiom, ...] = (
 )
 
 
+def _pack(value: str | tuple[str, str, str] | None) -> tuple[str, str, str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return (value, value, value)
+    return value
+
+
+def _idiom(
+    lang: str,
+    forms: str | tuple[str, ...],
+    gloss: str,
+    pt: str | tuple[str, str, str] | None = None,
+    en: str | tuple[str, str, str] | None = None,
+    hint: bool = False,
+) -> Idiom:
+    if isinstance(forms, str):
+        forms = (forms,)
+    casual: dict[str, str] = {}
+    formal: dict[str, str] = {}
+    travel: dict[str, str] = {}
+    for code, packed in (("pt", _pack(pt)), ("en", _pack(en))):
+        if packed:
+            casual[code], formal[code], travel[code] = packed
+    return Idiom(lang, forms, gloss, casual, formal, travel, hint)
+
+
+from services.slang_table import SLANG
+
+IDIOMS = IDIOMS + tuple(_idiom(*item) for item in SLANG)
+
+
 def _replacement(pattern: re.Pattern[str], repl: str, text: str) -> str:
     def _apply(match: re.Match[str]) -> str:
         word = match.group(0)
@@ -159,6 +202,50 @@ _COLLOQUIAL: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
         (re.compile(r"\btb\b", re.IGNORECASE), "também"),
         (re.compile(r"\bkd\b", re.IGNORECASE), "cadê"),
         (re.compile(r"\bq\b", re.IGNORECASE), "que"),
+        (re.compile(r"\bmt\b", re.IGNORECASE), "muito"),
+        (re.compile(r"\bhj\b", re.IGNORECASE), "hoje"),
+        (re.compile(r"\bdps\b", re.IGNORECASE), "depois"),
+        (re.compile(r"\bagr\b", re.IGNORECASE), "agora"),
+        (re.compile(r"\bcmg\b", re.IGNORECASE), "comigo"),
+        (re.compile(r"\bctg\b", re.IGNORECASE), "contigo"),
+        (re.compile(r"\bngm\b", re.IGNORECASE), "ninguém"),
+        (re.compile(r"\bvdd\b", re.IGNORECASE), "verdade"),
+    ),
+    "es": (
+        (re.compile(r"\btb\b", re.IGNORECASE), "también"),
+        (re.compile(r"\bxq\b", re.IGNORECASE), "porque"),
+        (re.compile(r"\bpq\b", re.IGNORECASE), "porque"),
+        (re.compile(r"\bdnd\b", re.IGNORECASE), "dónde"),
+        (re.compile(r"\bporfa\b", re.IGNORECASE), "por favor"),
+        (re.compile(r"\bq\b", re.IGNORECASE), "que"),
+    ),
+    "fr": (
+        (re.compile(r"\bjsp\b", re.IGNORECASE), "je ne sais pas"),
+        (re.compile(r"\bpk\b", re.IGNORECASE), "pourquoi"),
+        (re.compile(r"\bstp\b", re.IGNORECASE), "s'il te plaît"),
+        (re.compile(r"\bajd\b", re.IGNORECASE), "aujourd'hui"),
+        (re.compile(r"\bbjr\b", re.IGNORECASE), "bonjour"),
+        (re.compile(r"\bbcq\b", re.IGNORECASE), "parce que"),
+    ),
+    "de": (
+        (re.compile(r"\bhab\b", re.IGNORECASE), "habe"),
+        (re.compile(r"\bnem\b", re.IGNORECASE), "einem"),
+        (re.compile(r"\bwasn\b", re.IGNORECASE), "was denn"),
+        (re.compile(r"\bgrad\b", re.IGNORECASE), "gerade"),
+    ),
+    "it": (
+        (re.compile(r"\bke\b", re.IGNORECASE), "che"),
+        (re.compile(r"\bcmq\b", re.IGNORECASE), "comunque"),
+        (re.compile(r"\bnn\b", re.IGNORECASE), "non"),
+        (re.compile(r"\bxke\b", re.IGNORECASE), "perché"),
+        (re.compile(r"\bqlc\b", re.IGNORECASE), "qualcosa"),
+    ),
+    "ru": (
+        (re.compile(r"\bщас\b", re.IGNORECASE), "сейчас"),
+        (re.compile(r"\bща\b", re.IGNORECASE), "сейчас"),
+        (re.compile(r"\bспс\b", re.IGNORECASE), "спасибо"),
+        (re.compile(r"\bпж\b", re.IGNORECASE), "пожалуйста"),
+        (re.compile(r"\bпжлст\b", re.IGNORECASE), "пожалуйста"),
     ),
     "en": (
         (re.compile(r"\bgonna\b", re.IGNORECASE), "going to"),
@@ -224,18 +311,41 @@ def _apply_case(raw: str, replacement: str, at_start: bool) -> str:
     return replacement
 
 
-def _find_spans(text: str, source: str, target: str, context: str) -> list[tuple[int, int, str, str, str]]:
+def _form_pattern(lang: str, form: str) -> re.Pattern[str]:
+    body = form[3:] if form.startswith("re:") else re.escape(form)
+    # Chinês não separa palavras com espaço. Japonês e coreano colam a partícula no fim.
+    if lang == "zh" or (lang == "ko" and form.startswith("re:")):
+        return re.compile(body)
+    if lang in {"ja", "ko"}:
+        return re.compile(rf"(?<!\w){body}")
+    return re.compile(rf"(?<!\w){body}(?!\w)", re.IGNORECASE)
+
+
+_COMPILED: tuple[tuple[Idiom, tuple[re.Pattern[str], ...]], ...] = tuple(
+    (idiom, tuple(_form_pattern(idiom.lang, form) for form in idiom.forms)) for idiom in IDIOMS
+)
+_SLANG_LANGS = frozenset(idiom.lang for idiom in IDIOMS)
+
+
+def _find_spans(
+    text: str,
+    source: str,
+    target: str,
+    context: str,
+    include_hints: bool = True,
+) -> list[tuple[int, int, str, str, str]]:
     searchable = _match_text(text)
     found: list[tuple[int, int, str, str, str]] = []
-    for idiom in IDIOMS:
+    for idiom, patterns in _COMPILED:
         if idiom.lang != source:
+            continue
+        if idiom.hint_only and not include_hints:
             continue
         resolved = _resolve(idiom, target, context)
         if resolved is None:
             continue
         kind, value = resolved
-        for form in idiom.forms:
-            pattern = re.compile(rf"(?<!\w){re.escape(form)}(?!\w)", re.IGNORECASE)
+        for pattern in patterns:
             for match in pattern.finditer(searchable):
                 found.append((match.start(), match.end(), kind, value, text[match.start() : match.end()]))
     # Expressão mais longa primeiro; no empate, vale a ordem da tabela IDIOMS.
@@ -256,8 +366,8 @@ def _has_letters(text: str) -> bool:
 
 def detect_idiom_language(text: str) -> str | None:
     scores = {
-        lang: sum(end - start for start, end, *_rest in _find_spans(text, lang, "en" if lang == "pt" else "pt", "casual"))
-        for lang in ("pt", "en")
+        lang: sum(end - start for start, end, *_rest in _find_spans(text, lang, "en", "casual"))
+        for lang in _SLANG_LANGS
     }
     best = max(scores, key=scores.get)
     if scores[best] <= 0:
@@ -270,7 +380,7 @@ def glossary(text: str, source_code: str, target_code: str, context: str) -> lis
     source = language_base(source_code)
     if source == "auto":
         source = detect_idiom_language(text) or "auto"
-    if source not in {"pt", "en"}:
+    if source not in _SLANG_LANGS:
         return []
     spans = _find_spans(text, source, language_base(target_code), normalize_context(context))
     return [(raw, value) for _start, _end, _kind, value, raw in spans]
@@ -296,7 +406,7 @@ def render_cultural(
     target = language_base(target_code)
     if source == "auto":
         source = detect_idiom_language(text) or "auto"
-    spans = _find_spans(text, source, target, context) if source in {"pt", "en"} else []
+    spans = _find_spans(text, source, target, context, include_hints=False) if source in _SLANG_LANGS else []
 
     parts: list[str] = []
     direct: list[str] = []

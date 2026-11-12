@@ -8,7 +8,21 @@ from services.translation_engine import (
     VOICE_MAP,
     TranslationEngine,
     TranslationError,
+    _keep_untranslated_tail,
+    tidy_for_machine,
 )
+
+
+def test_repeated_punctuation_and_loops_are_stripped_before_argos() -> None:
+    assert tidy_for_machine("Ah!!!!!!!!") == "Ah!"
+    assert tidy_for_machine("Hoje a noite vai ser boa não saiu.") == "Hoje a noite vai ser boa. Não saiu."
+    loop = "eu não vou deixar assim " * 4
+    assert tidy_for_machine(loop) == "eu não vou deixar assim"
+    assert (
+        _keep_untranslated_tail("Hoje a noite vai ser boa. Não saiu.", "Tonight's gonna be good.", "en")
+        == "Tonight's gonna be good. It didn't come out."
+    )
+    assert _keep_untranslated_tail("Não saiu.", "It didn't come out.", "en") == "It didn't come out."
 
 
 def test_launch_catalog_contains_twelve_core_languages() -> None:
@@ -21,6 +35,10 @@ def test_launch_catalog_contains_twelve_core_languages() -> None:
 def test_hindi_and_arabic_are_supported() -> None:
     assert LANGUAGES_DICT["Hindi"] == "hi"
     assert LANGUAGES_DICT["Árabe"] == "ar"
+    assert "Hindi" in VOICE_MAP
+    from services.piper_engine import PiperEngine
+
+    assert PiperEngine().available_for("Hindi")
 
 
 @dataclass

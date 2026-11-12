@@ -32,6 +32,7 @@ if ($LASTEXITCODE -ne 0) { throw "Falha ao baixar o Piper; build cancelado." }
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
 
 if (Get-ChildItem $appDir -Recurse -Filter ".env" -Force) { throw "Um arquivo .env entrou no pacote; build cancelado para não vazar chaves." }
+if (Get-ChildItem $appDir -Recurse -Filter "license_ed25519.pem" -Force) { throw "A chave privada de licença entrou no pacote; build cancelado." }
 Copy-Item "THIRD_PARTY_NOTICES.md" $appDir -Force
 
 & $iscc "/DSourceDir=$appDir" "installer\LoonTranslator.iss"

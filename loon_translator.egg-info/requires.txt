@@ -7,6 +7,8 @@ deep-translator<2,>=1.11
 python-dotenv<2,>=1.0
 customtkinter<6,>=5.2
 argostranslate<2,>=1.9
+httpx<1,>=0.27
+cryptography<46,>=43
 
 [:platform_system == "Windows"]
 PyAudioWPatch<0.3,>=0.2.12.7

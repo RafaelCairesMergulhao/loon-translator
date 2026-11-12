@@ -23,26 +23,45 @@ from domain.structures import CircularBuffer
 logger = logging.getLogger(__name__)
 
 PRESETS: dict[str, tuple[str, str]] = {
+    "groq": ("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash"),
+    "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
+    "xai": ("https://api.x.ai/v1", "grok-3"),
+    "mistral": ("https://api.mistral.ai/v1", "mistral-small-latest"),
+    "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+    "openrouter": ("https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct"),
     "ollama": ("http://localhost:11434/v1", "qwen2.5:3b"),
     "lmstudio": ("http://localhost:1234/v1", "local-model"),
-    "groq": ("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b"),
-    "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
-    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash"),
-    "openrouter": ("https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct"),
+}
+
+PROVIDER_SITES = {
+    "groq": "console.groq.com/keys",
+    "gemini": "aistudio.google.com/apikey",
+    "openai": "platform.openai.com/api-keys",
+    "xai": "console.x.ai",
+    "mistral": "console.mistral.ai/api-keys",
+    "deepseek": "platform.deepseek.com/api_keys",
+    "openrouter": "openrouter.ai/keys",
+    "ollama": "ollama.com",
+    "lmstudio": "lmstudio.ai",
 }
 
 PROVIDER_LABELS = {
+    "groq": "Groq",
+    "gemini": "Gemini",
+    "openai": "OpenAI",
+    "xai": "Grok",
+    "mistral": "Mistral",
+    "deepseek": "DeepSeek",
+    "openrouter": "OpenRouter",
     "ollama": "Ollama",
     "lmstudio": "LM Studio",
-    "groq": "Groq",
-    "openai": "OpenAI",
-    "gemini": "Gemini",
-    "openrouter": "OpenRouter",
     "custom": "LLM",
 }
 
 _NAMES_BY_LANGUAGE = {
     "Português": "Brazilian Portuguese",
+    "Hindi": "Hindi (India)",
     "Espanhol": "European Spanish",
     "Espanhol (Latino)": "Latin American Spanish",
     "Chinês (Mandarim)": "Simplified Chinese (Mandarin)",
@@ -118,6 +137,38 @@ class LLMConfig:
         return f"{PROVIDER_LABELS.get(self.provider, 'LLM')} ({self.model})"
 
 
+def llm_key_name(provider: str) -> str:
+    return f"LLM_KEY_{provider.upper()}"
+
+
+def saved_llm_key(provider: str) -> str:
+    saved = os.getenv(llm_key_name(provider), "").strip()
+    if saved:
+        return saved
+    if provider == "xai":
+        return os.getenv("XAI_API_KEY", "").strip()
+    return ""
+
+
+def activate_llm(provider: str, api_key: str | None = None) -> LLMConfig:
+    """Grava a IA escolhida e a chave dessa IA. A conta e o pagamento ficam com quem cola a chave."""
+    from core.config import save_user_env
+
+    chosen = provider if provider in PRESETS else "groq"
+    base_url, model = PRESETS[chosen]
+    key = (api_key if api_key is not None else saved_llm_key(chosen)).strip()
+    values = {
+        "LLM_PROVIDER": chosen,
+        "LLM_BASE_URL": base_url,
+        "LLM_MODEL": model,
+        "LLM_API_KEY": key,
+    }
+    if api_key is not None and api_key.strip():
+        values[llm_key_name(chosen)] = api_key.strip()
+    save_user_env(values)
+    return LLMConfig.from_env()
+
+
 def language_description(code: str, language_name: str = "") -> str:
     if language_name in _NAMES_BY_LANGUAGE:
         return _NAMES_BY_LANGUAGE[language_name]
@@ -171,6 +222,7 @@ class LLMTranslator:
         target_name: str,
         context: str,
         hints: Sequence[tuple[str, str]] = (),
+        fragment: bool = False,
     ) -> list[dict[str, str]]:
         source = language_description(source_code)
         target = language_description(target_code, target_name)
@@ -181,7 +233,22 @@ class LLMTranslator:
             "Rules:",
             "- Reply with the translation only: no quotes, notes, or explanations.",
             f"- Keep meaning, intent, and tone; render idioms and slang with natural {target} equivalents, never word by word.",
-            "- The text comes from speech recognition: silently fix obvious recognition mistakes and drop filler words.",
+            "- Slang, swearing, and casual talk between friends stay in that register: use the natural equivalent in the target language, not a dictionary gloss and not a softer line.",
+            "- Swearing and insults are part of what was said. Translate them to a natural insult of the same strength in the target language.",
+            "- Do not censor, soften, or skip the line because it is rude.",
+            "- The text comes from speech recognition in a live call. It is often wrong: similar sounds, cut words, noise, repeated loops.",
+            "- Fix an obvious sound-alike only when the rest of the sentence is already clear.",
+            "- Voice chat, games, and casual talk keep their slang and tone. Do not rewrite them into a formal sentence.",
+            "- If the line is unfinished or unclear, translate only the words that are already clear. Do not invent the rest.",
+            (
+                "- This is the next stretch of a sentence that is still going. Translate the words that are here. "
+                "Do not reply with ∅ only because the sentence has not ended, and do not invent the ending."
+                if fragment
+                else "- If several words are garbled, the line is only a fragment, or you would be guessing the topic, reply with exactly ∅."
+            ),
+            "- Never turn broken words into a new fluent sentence. A gap is better than a sentence the speaker did not say.",
+            "- Do not invent facts, names, or requests they did not make. Do not answer them.",
+            "- Recent lines are only for a pronoun or a word that is almost clear. Do not continue a topic the current line does not say.",
             "- Keep it short and easy to speak: a text-to-speech voice will read it aloud.",
             "- Keep names, numbers, and brands unchanged.",
         ]
@@ -211,15 +278,19 @@ class LLMTranslator:
         target_name: str = "",
         context: str = "casual",
         hints: Sequence[tuple[str, str]] = (),
+        remember: bool = True,
+        fragment: bool = False,
     ) -> str:
         if not self.configured:
             raise LLMError("LLM não configurado")
         payload = {
             "model": self.config.model,
-            "messages": self.build_messages(text, source_code, target_code, target_name, context, hints),
+            "messages": self.build_messages(
+                text, source_code, target_code, target_name, context, hints, fragment=fragment
+            ),
             "temperature": 0.2,
             # Modelos de raciocínio (gpt-oss, DeepSeek-R1) gastam tokens pensando antes da resposta.
-            "max_tokens": min(1024, 256 + 4 * len(text.split())),
+            "max_tokens": min(256, 128 + 4 * len(text.split())),
             "stream": False,
         }
         try:
@@ -231,10 +302,16 @@ class LLMTranslator:
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMError(f"{self.config.label}: {exc}") from exc
         translated = self.clean(content or "")
+        if translated in {"∅", "Ø"}:
+            return ""
         if not translated:
             raise LLMError(f"{self.config.label}: resposta vazia")
-        self._history.insert((source_code, text, target_code, translated))
+        if remember:
+            self.remember(source_code, text, target_code, translated)
         return translated
+
+    def remember(self, source_code: str, text: str, target_code: str, translated: str) -> None:
+        self._history.insert((source_code, text, target_code, translated))
 
     @staticmethod
     def clean(content: str) -> str:

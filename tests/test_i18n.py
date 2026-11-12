@@ -30,6 +30,7 @@ def test_placeholders_survive_translation() -> None:
         assert "{languages}" in STRINGS["dialog_download_body"][code]
         assert "{language}" in STRINGS["pack_ready_for"][code]
         assert "{message}" in STRINGS["error_clear"][code]
+        assert "{percent}" in STRINGS["train_score"][code]
 
 
 def test_mode_and_context_labels_map_back() -> None:
@@ -39,5 +40,5 @@ def test_mode_and_context_labels_map_back() -> None:
         canonical_choice(ui_text("Francês", "context_travel"), CONTEXT_LABEL_KEYS, "Francês", "casual")
         == "travel"
     )
-    assert canonical_choice("Natural online (recommended)", VOICE_ENGINE_KEYS, "Inglês", "windows") == "natural"
-    assert canonical_choice("Local neural (Piper)", VOICE_ENGINE_KEYS, "Inglês", "natural") == "piper"
+    assert canonical_choice("Natural online", VOICE_ENGINE_KEYS, "Inglês", "windows") == "natural"
+    assert canonical_choice("Local neural (Piper, recommended)", VOICE_ENGINE_KEYS, "Inglês", "natural") == "piper"

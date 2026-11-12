@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import sounddevice as sd
 
 from domain.sorting import shell_sort
+from services.platform_host import current_host, host_rank
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,8 @@ class AudioDeviceManager:
             if allowed is not None and host_index not in allowed:
                 continue
             channels = int(device["max_input_channels"])
-            if channels > 0:
+            name = str(device["name"])
+            if channels > 0 and not self.is_monitor_source(name):
                 result.append(
                     AudioDevice(
                         uid=f"sd:{index}",
@@ -96,6 +98,12 @@ class AudioDeviceManager:
         return self.prefer_shared_mode(result)
 
     def list_loopbacks(self) -> list[AudioDevice]:
+        """No Windows o retorno é o WASAPI. No Mac e no Linux é um monitor."""
+        if current_host().loopback == "wasapi":
+            return self._wasapi_loopbacks()
+        return self._monitor_inputs()
+
+    def _wasapi_loopbacks(self) -> list[AudioDevice]:
         if pyaudio is None:
             return []
         result: list[AudioDevice] = []
@@ -114,6 +122,30 @@ class AudioDeviceManager:
                     )
         except OSError as exc:
             logger.warning("WASAPI loopback indisponível: %s", exc)
+        return result
+
+    def _monitor_inputs(self) -> list[AudioDevice]:
+        names = self._hostapi_names()
+        result: list[AudioDevice] = []
+        try:
+            devices = sd.query_devices()
+        except Exception as exc:
+            logger.warning("Monitores de áudio indisponíveis: %s", exc)
+            return []
+        for index, device in enumerate(devices):
+            name = str(device["name"])
+            if int(device["max_input_channels"]) <= 0 or not self.is_monitor_source(name):
+                continue
+            result.append(
+                AudioDevice(
+                    uid=f"sd:{index}",
+                    name=name,
+                    kind="loopback",
+                    channels=int(device["max_input_channels"]),
+                    sample_rate=int(device["default_samplerate"]),
+                    hostapi=names.get(int(device["hostapi"]), ""),
+                )
+            )
         return result
 
     def playback_fallbacks(self, preferred_uid: str, devices: list[AudioDevice]) -> list[str]:
@@ -152,8 +184,8 @@ class AudioDeviceManager:
         chosen: list[AudioDevice] = []
         for key in order:
             group = grouped[key]
-            wasapi = [item for item in group if "wasapi" in item.hostapi.casefold()]
-            chosen.append(wasapi[0] if wasapi else group[0])
+            native = [item for item in group if host_rank(item.hostapi) == 0]
+            chosen.append(native[0] if native else group[0])
         return chosen
 
     def select_device(
@@ -169,7 +201,9 @@ class AudioDeviceManager:
                 return found
         ranked = self._wasapi_first(devices)
         if role == "cable":
-            return next((item for item in ranked if self.is_cable_input(item.name)), None)
+            candidates = [item for item in ranked if self.is_cable_input(item.name)]
+            ours = [item for item in candidates if "loon translator" in item.name.casefold()]
+            return (ours or candidates or [None])[0]
         if role == "phones":
             physical = [
                 item
@@ -193,11 +227,7 @@ class AudioDeviceManager:
     def _wasapi_first(devices: list[AudioDevice]) -> list[AudioDevice]:
         return shell_sort(
             devices,
-            key=lambda item: (
-                0 if "wasapi" in item.hostapi.casefold() else 1,
-                item.name.casefold(),
-                item.uid,
-            ),
+            key=lambda item: (host_rank(item.hostapi), item.name.casefold(), item.uid),
         )
 
     def _saved_choice_ok(self, role: str, device: AudioDevice) -> bool:
@@ -214,14 +244,67 @@ class AudioDeviceManager:
         normalized = name.casefold()
         if "cable output" in normalized or "cable out" in normalized:
             return False
+        # "CABLE In 16ch" é outro ponto. O microfone da chamada é o CABLE Output,
+        # e ele só recebe o que entra no CABLE Input estéreo.
+        if "16" in normalized and "cable" in normalized:
+            return False
         if "cable input" in normalized or "cable in" in normalized:
+            return True
+        if "blackhole" in normalized or "soundflower" in normalized:
+            return True
+        if "loon translator" in normalized and "microphone" not in normalized and "monitor" not in normalized:
             return True
         return "voicemeeter" in normalized and "input" in normalized and "output" not in normalized
 
     @staticmethod
     def is_cable_output(name: str) -> bool:
+        return AudioDeviceManager.is_monitor_source(name)
+
+    @staticmethod
+    def is_monitor_source(name: str) -> bool:
+        """Onde o áudio da chamada entra: cabo, BlackHole ou monitor do sistema."""
         normalized = name.casefold()
-        return "cable output" in normalized or "cable out" in normalized
+        if "cable input" in normalized or "cable in" in normalized:
+            return False
+        return any(
+            token in normalized
+            for token in (
+                "cable output",
+                "cable out",
+                "blackhole",
+                "soundflower",
+                "monitor of",
+                "loopback",
+                ".monitor",
+                "loon translator microphone",
+            )
+        )
+
+    @staticmethod
+    def shares_endpoint(loopback_name: str, output_name: str) -> bool:
+        """O loopback ouve o que o Loon toca no mesmo aparelho; em outro aparelho não há eco.
+
+        O MME corta nomes em 31 caracteres, por isso basta um ser prefixo do outro.
+        Na dúvida (nome vazio ou mapeador do Windows), considera o mesmo aparelho.
+        """
+
+        def clean(name: str) -> str:
+            name = re.sub(r"\[\s*loopback\s*\]", "", name, flags=re.IGNORECASE)
+            return " ".join(name.casefold().split())
+
+        loopback, output = clean(loopback_name), clean(output_name)
+        if not loopback or not output or AudioDeviceManager.is_mapper(output_name):
+            return True
+        return loopback.startswith(output) or output.startswith(loopback)
+
+    @staticmethod
+    def cable_feeds_loopback(loopback_name: str, output_name: str) -> bool:
+        """O CABLE Output ouve o CABLE Input mesmo com nomes diferentes."""
+        if AudioDeviceManager.shares_endpoint(loopback_name, output_name):
+            return True
+        return AudioDeviceManager.is_cable_output(loopback_name) and AudioDeviceManager.is_cable_input(
+            output_name
+        )
 
     @staticmethod
     def is_mapper(name: str) -> bool:
@@ -288,4 +371,7 @@ class AudioDeviceManager:
     @staticmethod
     def _is_virtual(name: str) -> bool:
         normalized = name.lower()
-        return any(token in normalized for token in ("cable", "virtual", "voicemeeter", "sonar"))
+        return any(
+            token in normalized
+            for token in ("cable", "virtual", "voicemeeter", "sonar", "blackhole", "soundflower", "loon translator")
+        )

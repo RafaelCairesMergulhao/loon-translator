@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -18,10 +19,70 @@ from services.cultural_equivalence import (
     normalize_context,
     render_cultural,
 )
+from services.lexicon_manager import shared_lexicon
 from services.llm_translator import LLMTranslator
 from services.pt_br import to_brazilian
 
 logger = logging.getLogger(__name__)
+
+_PUNCT_RUN = re.compile(r"([^\w\s]|_)\1{2,}")
+
+
+_LOOSE_TAIL = re.compile(r"(?i)^(?P<head>.+?[A-Za-zÀ-ÿ0-9])\s+(?P<tail>não saiu)\s*\.?$")
+_SAID_NAO_SAIU = re.compile(r"(?i)(?<!\w)não saiu(?!\w)")
+_EN_NEGATION = re.compile(r"(?i)(?:\bnot\b|\bnever\b|\bno\b|n't)")
+
+
+def _separate_loose_tail(text: str) -> str:
+    """'boa não saiu' vira duas frases. Numa frase só, o Argos apaga o 'não saiu'."""
+    match = _LOOSE_TAIL.match(text.strip())
+    if match is None:
+        return text
+    head = match.group("head").rstrip(" ,;:")
+    if head[-1:] in ".!?…":
+        return text
+    return f"{head}. Não saiu."
+
+
+def _keep_untranslated_tail(source: str, translated: str, target: str) -> str:
+    """Se o modelo local comeu o 'não saiu', a segunda frase volta no inglês."""
+    if target != "en" or not _SAID_NAO_SAIU.search(source):
+        return translated
+    if _EN_NEGATION.search(translated):
+        return translated
+    spoken = translated.rstrip()
+    if spoken and spoken[-1:] not in ".!?":
+        spoken += "."
+    return f"{spoken} It didn't come out.".strip()
+
+
+def tidy_for_machine(text: str) -> str:
+    """Tira pontuação repetida e a mesma frase colada várias vezes, antes do tradutor local."""
+    words = _separate_loose_tail(_PUNCT_RUN.sub(r"\1", text or "")).split()
+    if len(words) < 6:
+        return " ".join(words)
+    limit = min(12, len(words) // 3)
+    for size in range(1, limit + 1):
+        pattern = tuple(word.casefold() for word in words[:size])
+        count = 1
+        index = size
+        while index + size <= len(words) and tuple(word.casefold() for word in words[index : index + size]) == pattern:
+            count += 1
+            index += size
+        if count >= 3 and index >= len(words) * 0.6:
+            return " ".join(words[:size])
+    return " ".join(words)
+
+def _slang_hints(text: str, source: str, target: str, context: str) -> list[tuple[str, str]]:
+    """A tabela cultural vem primeiro. O JSON só completa o que ela não cobriu, e só o que foi dito."""
+    hints = glossary(text, source, target, context)
+    seen = {raw.casefold() for raw, _value in hints}
+    for raw, value in shared_lexicon().hints(text, source, target):
+        if raw.casefold() in seen:
+            continue
+        seen.add(raw.casefold())
+        hints.append((raw, value))
+    return hints
 
 LANGUAGES_DICT = {
     "Auto": "auto",
@@ -84,7 +145,8 @@ class TranslationEngine:
     def __init__(self, llm: LLMTranslator | None = None) -> None:
         self.llm = llm if llm is not None else LLMTranslator()
         self.health = ProviderHealth()
-        self._cache: OrderedDict[tuple[str, str, str, str, str], TranslationResult] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, str, str, str, str, bool], TranslationResult] = OrderedDict()
+        self._unconfirmed: dict[tuple[str, str, str, str, str, bool], tuple[str, str, str, str]] = {}
         self._cache_lock = threading.Lock()
 
     def translate(
@@ -94,7 +156,14 @@ class TranslationEngine:
         target_language_name: str,
         mode: str = "Híbrido",
         context: str = "casual",
+        speculative: bool = False,
+        fragment: bool = False,
     ) -> TranslationResult:
+        """``speculative`` adianta a tradução de uma frase que talvez ainda continue.
+
+        O resultado vai para o cache, e a versão confirmada sai dele na hora; a
+        memória da conversa do LLM só recebe a frase quando ela é confirmada.
+        """
         target_code = LANGUAGES_DICT.get(target_language_name)
         if not target_code or target_code == "auto":
             raise TranslationError(f"Idioma de destino inválido: {target_language_name}")
@@ -103,32 +172,70 @@ class TranslationEngine:
         if language_base(source_code) == language_base(target_code):
             return TranslationResult(text=text, provider="sem tradução")
 
-        cache_key = (text, language_base(source_code), target_language_name, mode, context)
+        cache_key = (text, language_base(source_code), target_language_name, mode, context, fragment)
+        memory = None
         with self._cache_lock:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 self._cache.move_to_end(cache_key)
-                return cached
-        result = self._translate_uncached(text, source_code, target_language_name, target_code, mode, context)
+                if not speculative:
+                    memory = self._unconfirmed.pop(cache_key, None)
+        if cached is not None:
+            if memory is not None:
+                self.llm.remember(*memory)
+            return cached
+        effective_source = self._effective_source(text, source_code)
+        result = self._translate_uncached(
+            text,
+            effective_source,
+            target_language_name,
+            target_code,
+            mode,
+            context,
+            remember=not speculative,
+            fragment=fragment,
+        )
         with self._cache_lock:
             self._cache[cache_key] = result
+            if speculative and result.provider == self.llm.label:
+                self._unconfirmed[cache_key] = (effective_source, text, target_code, result.text)
             while len(self._cache) > self.CACHE_SIZE:
-                self._cache.popitem(last=False)
+                evicted, _result = self._cache.popitem(last=False)
+                self._unconfirmed.pop(evicted, None)
         return result
+
+    def preview(self, text: str, source_code: str, target_language_name: str) -> str | None:
+        """Tradução provisória para a legenda ao vivo.
+
+        Só o Argos local: não gasta cota de nuvem, não entra na memória do LLM e
+        uma falha aqui não derruba o provedor na fila da tradução de verdade.
+        """
+        target_code = LANGUAGES_DICT.get(target_language_name, "")
+        source = self._effective_source(text, source_code or "auto")
+        if not target_code or language_base(source) in {"auto", language_base(target_code)}:
+            return None
+        try:
+            return self._translate_argos(text, source, target_code) or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _effective_source(text: str, source_code: str) -> str:
+        if language_base(source_code) == "auto":
+            return detect_idiom_language(text) or source_code
+        return source_code
 
     def _translate_uncached(
         self,
         text: str,
-        source_code: str,
+        effective_source: str,
         target_language_name: str,
         target_code: str,
         mode: str,
         context: str,
+        remember: bool = True,
+        fragment: bool = False,
     ) -> TranslationResult:
-        effective_source = source_code
-        if language_base(source_code) == "auto":
-            effective_source = detect_idiom_language(text) or source_code
-
         if mode == "IA" and self.llm.configured and not self.health.is_open("llm"):
             started = time.perf_counter()
             try:
@@ -138,9 +245,13 @@ class TranslationEngine:
                     target_code,
                     target_language_name,
                     context,
-                    glossary(text, effective_source, target_code, context),
+                    _slang_hints(text, effective_source, target_code, context),
+                    remember=remember,
+                    fragment=fragment,
                 )
                 self.health.success("llm", (time.perf_counter() - started) * 1000)
+                if not translated:
+                    return TranslationResult("", self.llm.label)
                 return TranslationResult(translated, self.llm.label)
             except Exception as exc:
                 self.health.failure("llm")
@@ -222,6 +333,7 @@ class TranslationEngine:
 
     @staticmethod
     def _translate_argos(text: str, source_code: str, target_code: str) -> str:
+        text = tidy_for_machine(text)
         if source_code == "auto":
             raise TranslationError("Argos requer idioma de origem conhecido")
         import argostranslate.translate
@@ -249,7 +361,7 @@ class TranslationEngine:
             raise TranslationError("resposta vazia")
         if target == "pt":
             result = to_brazilian(result)
-        return result
+        return _keep_untranslated_tail(text, result, target)
 
     def warm_up(self, pairs: list[tuple[str, str]], mode: str) -> None:
         """Carrega os modelos Argos dos pares da sessão antes da primeira fala."""

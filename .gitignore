@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .env
+secrets/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -12,6 +13,7 @@ backup_v0.3.0/
 vendor/piper/
 *.spec
 *.log
+logs/
 serviceAccountKey.json
 loon_translator.db
 settings.json
